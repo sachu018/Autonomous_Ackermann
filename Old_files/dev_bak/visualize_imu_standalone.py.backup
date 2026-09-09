@@ -1,0 +1,1408 @@
+#!/usr/bin/env python3
+"""
+visualize_imu.py
+----------------
+Starts a multi-threaded Python web server on the BeagleBone Black.
+Serves a beautiful, premium dark-mode web dashboard featuring:
+  - Real-time 3D model rotation of the UGV chassis using Three.js.
+  - Real-time scrolling telemetry charts using Chart.js.
+  - Live numerical display for calibrated Accel and Gyro readings.
+  - One-click trigger to run IMU calibration.
+"""
+
+import time
+import json
+import sys
+import os
+import subprocess
+import socket
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
+
+# ── Thread-Safe Global State for Telemetry ────────────────────────────────────────
+latest_telemetry_lock = threading.Lock()
+latest_telemetry_data = {
+    "online": False,
+    "state": "STANDBY",
+    "Xn": 0.0, "Yn": 0.0,
+    "fwd_safe_pct": 1.0, "rev_safe_pct": 1.0,
+    "swd_on": False, "rc_ok": False,
+    "cmd_rpm_l": 0.0, "cmd_rpm_r": 0.0,
+    "cmd_thr_l": 0, "cmd_thr_r": 0,
+    "enc_l": 0.0, "enc_r": 0.0,
+    # IMU
+    "ax": 0.0, "ay": 0.0, "az": -1.0,
+    "gx": 0.0, "gy": 0.0, "gz": 0.0,
+    "temp": 0.0
+}
+last_packet_time = 0.0
+
+def telemetry_source_thread():
+    global last_packet_time, latest_telemetry_data
+    
+    # ── MPU-6050 Register Constants ──
+    MPU_ADDR = 0x68
+    PWR_MGMT_1 = 0x6B
+    ACCEL_XOUT_H = 0x3B
+    GYRO_XOUT_H = 0x43
+    ACCEL_SCALE = 16384.0
+    GYRO_SCALE = 131.0
+    CALIBRATION_FILE = "/home/debian/Robot/imu_calibration.json"
+
+    # Initialize UDP socket (non-blocking)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.setblocking(False)
+    try:
+        sock.bind(("127.0.0.1", 5005))
+        print("[Standalone Server] Bound UDP listener to port 5005 successfully.")
+    except Exception as e:
+        print(f"[Standalone Server] Warning: Failed to bind UDP listener on port 5005: {e}")
+        
+    # Initialize BNO055 directly on I2C Bus 2
+    bno_sensor = None
+    imu_initialized = False
+    try:
+        import board
+        import adafruit_bno055
+        i2c_bus = board.I2C()
+        bno_sensor = adafruit_bno055.BNO055_I2C(i2c_bus)
+        imu_initialized = True
+        print("[Standalone Server] Connected directly to BNO055 on I2C Bus 2.")
+    except Exception as e:
+        print(f"[Standalone Server] Warning: Could not connect to BNO055 directly: {e}")
+
+    # Load calibration parameters
+    cal_offsets = {
+        "accel_offset_x": 0.0, "accel_offset_y": 0.0, "accel_offset_z": 0.0,
+        "gyro_offset_x": 0.0, "gyro_offset_y": 0.0, "gyro_offset_z": 0.0
+    }
+    if os.path.exists(CALIBRATION_FILE):
+        try:
+            with open(CALIBRATION_FILE, 'r') as f:
+                cal = json.load(f)
+            cal_offsets.update(cal)
+        except Exception:
+            pass
+
+    def read_raw_word_local(reg):
+        high = i2c_bus.read_byte_data(MPU_ADDR, reg)
+        low = i2c_bus.read_byte_data(MPU_ADDR, reg + 1)
+        val = (high << 8) | low
+        if val > 32767:
+            val -= 65536
+        return val
+
+    print("[Standalone Server] Standing by for telemetry packets or reading IMU directly...")
+    while True:
+        udp_received = False
+        try:
+            data, addr = sock.recvfrom(2048)
+            packet = json.loads(data.decode('utf-8'))
+            with latest_telemetry_lock:
+                latest_telemetry_data = packet
+                latest_telemetry_data["online"] = True
+                last_packet_time = time.monotonic()
+            udp_received = True
+        except BlockingIOError:
+            pass # No UDP data available
+        except Exception:
+            pass
+            
+        # If no UDP telemetry packets have been received in the last 1.5 seconds,
+        # directly poll the MPU-6050 over I2C to keep the visualization active.
+        if not udp_received and (time.monotonic() - last_packet_time > 1.5):
+            if imu_initialized and bno_sensor is not None:
+                try:
+                    accel = bno_sensor.acceleration
+                    gyro = bno_sensor.gyro
+                    mag = bno_sensor.magnetic
+                    euler = bno_sensor.euler
+                    temp = bno_sensor.temperature
+                    cal = bno_sensor.calibration_status
+                    
+                    ax, ay, az = 0.0, 0.0, -1.0
+                    gx, gy, gz = 0.0, 0.0, 0.0
+                    mx, my, mz = 0.0, 0.0, 0.0
+                    f_yaw, f_roll, f_pitch = 0.0, 0.0, 0.0
+                    temp_c = 0.0
+                    c_sys, c_gyro, c_acc, c_mag = 0, 0, 0, 0
+
+                    if accel is not None and accel[0] is not None:
+                        ax, ay, az = [val / 9.80665 for val in accel]
+                    if gyro is not None and gyro[0] is not None:
+                        gx, gy, gz = [val * 57.29577951308232 for val in gyro]
+                    if mag is not None and mag[0] is not None:
+                        mx, my, mz = mag
+                    if euler is not None and euler[0] is not None:
+                        f_yaw, f_roll, f_pitch = euler
+                    if temp is not None:
+                        temp_c = temp
+                    if cal is not None:
+                        c_sys, c_gyro, c_acc, c_mag = cal
+
+                    with latest_telemetry_lock:
+                        latest_telemetry_data = {
+                            "online": False, 
+                            "state": "STANDBY",
+                            "Xn": 0.0, "Yn": 0.0,
+                            "fwd_safe_pct": 1.0, "rev_safe_pct": 1.0,
+                            "swd_on": False, "rc_ok": False,
+                            "cmd_rpm_l": 0.0, "cmd_rpm_r": 0.0,
+                            "cmd_thr_l": 0, "cmd_thr_r": 0,
+                            "enc_l": 0.0, "enc_r": 0.0,
+                            "ax": round(ax, 4), "ay": round(ay, 4), "az": round(az, 4),
+                            "gx": round(gx, 2), "gy": round(gy, 2), "gz": round(gz, 2),
+                            "mx": round(mx, 1), "my": round(my, 1), "mz": round(mz, 1),
+                            "f_yaw": round(f_yaw, 1), "f_roll": round(f_roll, 1), "f_pitch": round(f_pitch, 1),
+                            "c_sys": c_sys, "c_gyro": c_gyro, "c_acc": c_acc, "c_mag": c_mag,
+                            "temp": round(temp_c, 1)
+                        }
+                except Exception:
+                    pass
+            else:
+                with latest_telemetry_lock:
+                    latest_telemetry_data["online"] = False
+
+        time.sleep(0.02)
+
+def get_latest_telemetry():
+    with latest_telemetry_lock:
+        if time.monotonic() - last_packet_time > 1.5:
+            latest_telemetry_data["online"] = False
+        return latest_telemetry_data.copy()
+
+HTML_CONTENT = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UGV IMU Live Telemetry</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
+    
+    <!-- Local offline libraries -->
+    <script src="/js/three.min.js"></script>
+    <script src="/js/chart.js"></script>
+    
+    <style>
+        :root {
+            --bg-dark: #0b0f19;
+            --bg-card: #151c2c;
+            --border-color: #222e45;
+            --accent-cyan: #00e5ff;
+            --accent-violet: #8a2be2;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --success: #10b981;
+            --danger: #ef4444;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: 'Outfit', sans-serif;
+            overflow-x: hidden;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem 2rem;
+            border-bottom: 1px solid var(--border-color);
+            background-color: rgba(21, 28, 44, 0.5);
+            backdrop-filter: blur(10px);
+            z-index: 100;
+        }
+
+        h1 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-violet));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-container {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--danger);
+            box-shadow: 0 0 10px var(--danger);
+        }
+
+        .status-dot.connected {
+            background-color: var(--success);
+            box-shadow: 0 0 10px var(--success);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        .btn {
+            background: linear-gradient(135deg, rgba(0, 229, 255, 0.1), rgba(138, 43, 226, 0.1));
+            border: 1px solid var(--accent-cyan);
+            color: var(--text-main);
+            padding: 0.6rem 1.2rem;
+            border-radius: 8px;
+            font-family: 'Outfit', sans-serif;
+            font-weight: 600;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn:hover {
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-violet));
+            box-shadow: 0 0 15px rgba(0, 229, 255, 0.4);
+            transform: translateY(-2px);
+            border-color: transparent;
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        main {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            padding: 2rem;
+            max-width: 1600px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        @media (max-width: 1024px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            border-bottom: 1px solid rgba(34, 46, 69, 0.5);
+            padding-bottom: 0.75rem;
+        }
+
+        .panel-title {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 1.125rem;
+            font-weight: 700;
+            color: var(--text-main);
+        }
+
+        /* 3D Visualizer styling */
+        .canvas-container {
+            width: 100%;
+            height: 400px;
+            background: radial-gradient(circle, #1a233a 0%, #0d1322 100%);
+            border-radius: 12px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        #three-canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Telemetry overlay cards */
+        .telemetry-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .telemetry-card {
+            background-color: rgba(11, 15, 25, 0.4);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+        }
+
+        /* Compass Layout & Styling */
+        .compass-card-content {
+            display: flex;
+            align-items: center;
+            justify-content: space-around;
+            gap: 2rem;
+            padding: 0.5rem 1rem;
+        }
+
+        .compass-viewport {
+            position: relative;
+            width: 140px;
+            height: 140px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(21,28,44,0.8) 0%, rgba(11,15,25,0.9) 100%);
+            border: 2px solid var(--border-color);
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.4), inset 0 0 15px rgba(0, 229, 255, 0.05);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .compass-lubber {
+            position: absolute;
+            top: -6px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 0;
+            height: 0;
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-top: 10px solid var(--danger);
+            z-index: 10;
+        }
+
+        .compass-dial {
+            position: absolute;
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            border: 1px dashed rgba(0, 229, 255, 0.2);
+            transition: transform 0.1s ease-out;
+        }
+
+        .compass-label {
+            position: absolute;
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 800;
+            font-size: 0.85rem;
+            color: var(--text-main);
+        }
+        .compass-label.n { top: 4px; left: 50%; transform: translateX(-50%); color: var(--danger); }
+        .compass-label.e { right: 6px; top: 50%; transform: translateY(-50%); }
+        .compass-label.s { bottom: 4px; left: 50%; transform: translateX(-50%); }
+        .compass-label.w { left: 6px; top: 50%; transform: translateY(-50%); }
+
+        .compass-center-readout {
+            z-index: 5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Space Grotesk', sans-serif;
+        }
+        .compass-deg {
+            font-size: 1.125rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+            text-shadow: 0 0 10px rgba(0, 229, 255, 0.3);
+        }
+        .compass-dir {
+            font-size: 0.65rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .card-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+        }
+
+        .card-value-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 0.5rem;
+        }
+
+        .card-value {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .axis-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        .axis-item {
+            display: flex;
+            justify-content: space-between;
+            background: rgba(34, 46, 69, 0.3);
+            padding: 0.35rem 0.5rem;
+            border-radius: 6px;
+            border-left: 3px solid var(--border-color);
+        }
+
+        .axis-item.x { border-left-color: #ef4444; }
+        .axis-item.y { border-left-color: #10b981; }
+        .axis-item.z { border-left-color: #3b82f6; }
+
+        .axis-name {
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+
+        .axis-val {
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 700;
+        }
+
+        /* Chart container */
+        .chart-container {
+            position: relative;
+            flex: 1;
+            min-height: 230px;
+            max-height: 250px;
+            margin-bottom: 1rem;
+        }
+
+        /* Calibration modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(11, 15, 25, 0.85);
+            backdrop-filter: blur(8px);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-content {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 2.5rem;
+            max-width: 450px;
+            width: 90%;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-title {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 1.35rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            border-left-color: var(--accent-cyan);
+            border-right-color: var(--accent-violet);
+            animation: spin 1s linear infinite;
+            margin: 1.5rem auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .modal-text {
+            color: var(--text-muted);
+            line-height: 1.5;
+            margin-bottom: 1rem;
+        }
+
+        .progress-bar {
+            width: 100%;
+            background: rgba(34, 46, 69, 0.5);
+            height: 6px;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 1rem;
+        }
+
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-violet));
+            transition: width 0.1s linear;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+            <h1>UGV IMU Telemetry Console</h1>
+            <p style="font-size: 0.75rem; color: var(--text-muted);">Real-time BNO055 9-Axis Diagnostics Dashboard</p>
+        </div>
+        <div class="status-container">
+            <div class="status-indicator">
+                <div class="status-dot" id="status-dot"></div>
+                <span id="status-text">DISCONNECTED</span>
+            </div>
+            <button class="btn" onclick="startCalibration()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                Calibrate Sensors
+            </button>
+        </div>
+    </header>
+
+    <main>
+        <!-- LEFT PANEL: 3D Visualization & Live Telemetry values -->
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">3D Orientation Visualizer</span>
+                <button class="btn" style="padding: 0.3rem 0.7rem; font-size: 0.75rem; border-color: rgba(34,46,69,0.8);" onclick="resetYaw()">
+                    Reset Yaw
+                </button>
+            </div>
+            
+            <div class="canvas-container">
+                <div id="three-canvas"></div>
+            </div>
+
+            <div class="telemetry-grid">
+                <div class="telemetry-card">
+                    <span class="card-label">UGV Orientation</span>
+                    <div class="card-value-row">
+                        <span class="card-value" style="color: var(--accent-cyan);" id="pitch-roll">Roll: 0° / Pitch: 0°</span>
+                    </div>
+                    <div class="axis-row">
+                        <div class="axis-item x">
+                            <span class="axis-name">Roll</span>
+                            <span class="axis-val" id="roll-val">0.0°</span>
+                        </div>
+                        <div class="axis-item y">
+                            <span class="axis-name">Pitch</span>
+                            <span class="axis-val" id="pitch-val">0.0°</span>
+                        </div>
+                        <div class="axis-item z">
+                            <span class="axis-name">Yaw</span>
+                            <span class="axis-val" id="yaw-val">0.0°</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="telemetry-card">
+                    <span class="card-label">Linear Accel / Rotational Rates</span>
+                    <div class="card-value-row">
+                        <span class="card-value" style="color: var(--accent-violet);" id="mag-g">Gravity: 1.00g</span>
+                    </div>
+                    <div class="axis-row">
+                        <div class="axis-item x">
+                            <span class="axis-name">Acc Z</span>
+                            <span class="axis-val" id="acc-z-val">-1.00g</span>
+                        </div>
+                        <div class="axis-item y">
+                            <span class="axis-name">Gyro Z</span>
+                            <span class="axis-val" id="gyro-z-val">0.0°/s</span>
+                        </div>
+                        <div class="axis-item z">
+                            <span class="axis-name">Temp</span>
+                            <span class="axis-val" id="temp-val">--°C</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="telemetry-card">
+                    <span class="card-label">Wheel Encoders (RPM)</span>
+                    <div class="card-value-row">
+                        <span class="card-value" style="color: #10b981;" id="enc-l-r">L: +0.0 / R: +0.0</span>
+                    </div>
+                    <div class="axis-row">
+                        <div class="axis-item x" style="border-left-color: #10b981;">
+                            <span class="axis-name">Left RPM</span>
+                            <span class="axis-val" id="enc-l-val">+0.0</span>
+                        </div>
+                        <div class="axis-item y" style="border-left-color: #3b82f6;">
+                            <span class="axis-name">Right RPM</span>
+                            <span class="axis-val" id="enc-r-val">+0.0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="telemetry-card">
+                    <span class="card-label">FlySky Transmitter</span>
+                    <div class="card-value-row">
+                        <span class="card-value" style="color: #eab308;" id="flysky-state">STANDBY</span>
+                    </div>
+                    <div class="axis-row">
+                        <div class="axis-item x" style="border-left-color: #ef4444;">
+                            <span class="axis-name">Stick X</span>
+                            <span class="axis-val" id="stick-x-val">0.00</span>
+                        </div>
+                        <div class="axis-item y" style="border-left-color: #10b981;">
+                            <span class="axis-name">Stick Y</span>
+                            <span class="axis-val" id="stick-y-val">0.00</span>
+                        </div>
+                        <div class="axis-item z" style="border-left-color: #a855f7;">
+                            <span class="axis-name">Speed Lim</span>
+                            <span class="axis-val" id="speed-lim-val">100%</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="telemetry-card">
+                    <span class="card-label">BNO055 Calibration</span>
+                    <div class="card-value-row">
+                        <span class="card-value" style="color: #10b981;">Hardware Self-Cal</span>
+                    </div>
+                    <div class="axis-row">
+                        <div class="axis-item x">
+                            <span class="axis-name">Sys</span>
+                            <span class="axis-val" id="cal-sys-val" style="color: var(--danger);">Lvl 0</span>
+                        </div>
+                        <div class="axis-item y">
+                            <span class="axis-name">Gyro</span>
+                            <span class="axis-val" id="cal-gyro-val" style="color: var(--danger);">Lvl 0</span>
+                        </div>
+                        <div class="axis-item z">
+                            <span class="axis-name">Accel</span>
+                            <span class="axis-val" id="cal-acc-val" style="color: var(--danger);">Lvl 0</span>
+                        </div>
+                        <div class="axis-item z" style="border-left: 2px solid #a855f7; padding-left: 0.5rem; margin-left: 0.5rem;">
+                            <span class="axis-name">Mag</span>
+                            <span class="axis-val" id="cal-mag-val" style="color: var(--danger);">Lvl 0</span>
+                        </div>
+                    </div>
+                    <div style="margin-top: 0.75rem; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+                        <button id="calibrate-btn" onclick="startAutoCalibration()"
+                            style="
+                                background: linear-gradient(135deg, #0ea5e9, #6366f1);
+                                color: white;
+                                border: none;
+                                border-radius: 8px;
+                                padding: 0.45rem 1rem;
+                                font-family: 'Space Grotesk', sans-serif;
+                                font-weight: 600;
+                                font-size: 0.8rem;
+                                cursor: pointer;
+                                letter-spacing: 0.03em;
+                                box-shadow: 0 2px 12px rgba(99,102,241,0.35);
+                                transition: opacity 0.2s;
+                            "
+                            onmouseover="this.style.opacity='0.85'"
+                            onmouseout="this.style.opacity='1'">
+                            ⚙ Auto Calibrate
+                        </button>
+                        <span id="cal-status-msg" style="font-size: 0.75rem; color: var(--text-muted);"></span>
+                    </div>
+                </div>
+
+                <div class="telemetry-card">
+                    <span class="card-label">System Diagnostics</span>
+                    <div class="card-value-row">
+                        <span class="card-value" style="color: #3b82f6;">BeagleBone Black</span>
+                    </div>
+                    <div class="axis-row">
+                        <div class="axis-item x" style="border-left-color: #3b82f6;">
+                            <span class="axis-name">Host IP</span>
+                            <span class="axis-val" style="font-size: 0.75rem;">10.165.173.145</span>
+                        </div>
+                        <div class="axis-item y" style="border-left-color: #10b981;">
+                            <span class="axis-name">OS Kernel</span>
+                            <span class="axis-val" style="font-size: 0.75rem;">r83 (WiFi)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="telemetry-card" style="grid-column: span 2;">
+                    <span class="card-label">Compass & Magnetic Diagnostics</span>
+                    <div class="compass-card-content">
+                        <!-- Left side: The Visual Compass -->
+                        <div class="compass-viewport">
+                            <div class="compass-lubber"></div>
+                            <div class="compass-dial" id="compass-dial">
+                                <span class="compass-label n">N</span>
+                                <span class="compass-label e">E</span>
+                                <span class="compass-label s">S</span>
+                                <span class="compass-label w">W</span>
+                            </div>
+                            <div class="compass-center-readout">
+                                <span class="compass-deg" id="compass-deg-val">000°</span>
+                                <span class="compass-dir" id="compass-dir-val">N</span>
+                            </div>
+                        </div>
+
+                        <!-- Right side: Numerical Magnetometer telemetry -->
+                        <div style="flex: 1; display: flex; flex-direction: column; gap: 0.5rem;">
+                            <div class="card-value-row">
+                                <span class="card-value" style="color: var(--accent-cyan);" id="mag-total">Total Mag: 0.0 µT</span>
+                            </div>
+                            <div class="axis-row">
+                                <div class="axis-item x" style="border-left-color: var(--accent-cyan);">
+                                    <span class="axis-name">Mag X</span>
+                                    <span class="axis-val" id="mag-x-val">0.0 µT</span>
+                                </div>
+                                <div class="axis-item y" style="border-left-color: var(--accent-cyan);">
+                                    <span class="axis-name">Mag Y</span>
+                                    <span class="axis-val" id="mag-y-val">0.0 µT</span>
+                                </div>
+                                <div class="axis-item z" style="border-left-color: var(--accent-cyan);">
+                                    <span class="axis-name">Mag Z</span>
+                                    <span class="axis-val" id="mag-z-val">0.0 µT</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- RIGHT PANEL: Telemetry Charts -->
+        <div class="panel" style="gap: 1rem;">
+            <div>
+                <div class="panel-header" style="margin-bottom: 0.5rem;">
+                    <span class="panel-title">Accelerometer History (g)</span>
+                </div>
+                <div class="chart-container">
+                    <canvas id="accelChart"></canvas>
+                </div>
+            </div>
+            
+            <div>
+                <div class="panel-header" style="margin-bottom: 0.5rem; border-top: 1px solid rgba(34, 46, 69, 0.3); padding-top: 1rem;">
+                    <span class="panel-title">Gyroscope History (deg/s)</span>
+                </div>
+                <div class="chart-container">
+                    <canvas id="gyroChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Calibration Modal Dialog -->
+    <div class="modal" id="cal-modal">
+        <div class="modal-content">
+            <span class="modal-title">IMU Calibration Active</span>
+            <div class="spinner"></div>
+            <p class="modal-text">Keep the UGV completely flat and motionless on a level surface.</p>
+            <p class="modal-text" style="font-size: 0.85rem;" id="cal-subtext">Sampling 500 calibration points...</p>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Script Logic -->
+    <script>
+        // Setup state variables
+        let connectionActive = false;
+        let eventSource = null;
+        
+        let pitch = 0.0;
+        let roll = 0.0;
+        let yaw = 0.0;
+        let lastTimestamp = null;
+        
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+
+        // 1. Initialize Three.js Scene
+        const canvasContainer = document.querySelector('.canvas-container');
+        const width = canvasContainer.clientWidth;
+        const height = canvasContainer.clientHeight;
+        
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x0d1322, 0.015);
+        
+        const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
+        camera.position.set(3, 2, 4);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(width, height);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.getElementById('three-canvas').appendChild(renderer.domElement);
+
+        // Add lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        
+        const dirLight1 = new THREE.DirectionalLight(0x00e5ff, 0.8);
+        dirLight1.position.set(5, 5, 5);
+        scene.add(dirLight1);
+
+        const dirLight2 = new THREE.DirectionalLight(0x8a2be2, 0.6);
+        dirLight2.position.set(-5, 3, -5);
+        scene.add(dirLight2);
+
+        // Draw a UGV-like 3D chassis
+        const group = new THREE.Group();
+        scene.add(group);
+
+        // Main chassis body
+        const chassisGeom = new THREE.BoxGeometry(1.6, 0.2, 0.9);
+        const chassisMat = new THREE.MeshPhongMaterial({
+            color: 0x1f2937,
+            shininess: 80,
+            bumpScale: 0.05
+        });
+        const chassis = new THREE.Mesh(chassisGeom, chassisMat);
+        group.add(chassis);
+
+        // Add a green PCB detail on top
+        const pcbGeom = new THREE.BoxGeometry(0.8, 0.04, 0.6);
+        const pcbMat = new THREE.MeshPhongMaterial({
+            color: 0x065f46,
+            shininess: 90
+        });
+        const pcb = new THREE.Mesh(pcbGeom, pcbMat);
+        pcb.position.y = 0.12;
+        group.add(pcb);
+
+        // Add arrow indicating forward direction (+X is forward)
+        const arrowLength = 0.5;
+        const arrowDir = new THREE.Vector3(1, 0, 0);
+        const arrowOrigin = new THREE.Vector3(0, 0.15, 0);
+        const arrowHelper = new THREE.ArrowHelper(arrowDir, arrowOrigin, arrowLength, 0x00e5ff, 0.15, 0.1);
+        group.add(arrowHelper);
+
+        // 4 Wheels
+        const wheelGeom = new THREE.CylinderGeometry(0.3, 0.3, 0.2, 16);
+        const wheelMat = new THREE.MeshPhongMaterial({ color: 0x111827 });
+        const wheels = [];
+        const wheelOffsets = [
+            { x: 0.5, y: -0.1, z: 0.5 },
+            { x: 0.5, y: -0.1, z: -0.5 },
+            { x: -0.5, y: -0.1, z: 0.5 },
+            { x: -0.5, y: -0.1, z: -0.5 }
+        ];
+
+        wheelOffsets.forEach(offset => {
+            const wheel = new THREE.Mesh(wheelGeom, wheelMat);
+            wheel.rotation.x = Math.PI / 2; // Lie flat along horizontal
+            wheel.position.set(offset.x, offset.y, offset.z);
+            group.add(wheel);
+            wheels.push(wheel);
+        });
+
+        // Grid helper at bottom
+        const gridHelper = new THREE.GridHelper(10, 20, 0x222e45, 0x151c2c);
+        gridHelper.position.y = -0.5;
+        scene.add(gridHelper);
+
+        // Animation Loop
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Smoothly rotate UGV model using the complementary filtered roll and pitch
+            // Converting degrees to radians
+            // Note: Since the MPU is mounted upside down, we compensate:
+            // roll (around X axis) rotates group.rotation.x
+            // pitch (around Y/Z axis) rotates group.rotation.z
+            group.rotation.x = roll * Math.PI / 180.0;
+            group.rotation.z = -pitch * Math.PI / 180.0; 
+            group.rotation.y = yaw * Math.PI / 180.0;
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Handle resize
+        window.addEventListener('resize', () => {
+            const w = canvasContainer.clientWidth;
+            const h = canvasContainer.clientHeight;
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+
+        // 2. Initialize Telemetry Charts
+        const maxPoints = 50;
+        const chartOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            scales: {
+                x: { display: false },
+                y: {
+                    grid: { color: 'rgba(34, 46, 69, 0.3)' },
+                    ticks: { color: '#9ca3af', font: { family: 'Outfit' } }
+                }
+            },
+            plugins: {
+                legend: {
+                    labels: { color: '#f3f4f6', font: { family: 'Outfit', weight: '600' } }
+                }
+            }
+        };
+
+        const accelCtx = document.getElementById('accelChart').getContext('2d');
+        const accelChart = new Chart(accelCtx, {
+            type: 'line',
+            data: {
+                labels: Array(maxPoints).fill(''),
+                datasets: [
+                    { label: 'Accel X', data: Array(maxPoints).fill(0), borderColor: '#ef4444', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.1 },
+                    { label: 'Accel Y', data: Array(maxPoints).fill(0), borderColor: '#10b981', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.1 },
+                    { label: 'Accel Z', data: Array(maxPoints).fill(-1), borderColor: '#3b82f6', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.1 }
+                ]
+            },
+            options: chartOptions
+        });
+
+        const gyroCtx = document.getElementById('gyroChart').getContext('2d');
+        const gyroChart = new Chart(gyroCtx, {
+            type: 'line',
+            data: {
+                labels: Array(maxPoints).fill(''),
+                datasets: [
+                    { label: 'Gyro X', data: Array(maxPoints).fill(0), borderColor: '#ef4444', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.1 },
+                    { label: 'Gyro Y', data: Array(maxPoints).fill(0), borderColor: '#10b981', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.1 },
+                    { label: 'Gyro Z', data: Array(maxPoints).fill(0), borderColor: '#3b82f6', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.1 }
+                ]
+            },
+            options: chartOptions
+        });
+
+        // 3. Connect to Server-Sent Events stream
+        
+        function updateCalBadge(id, level) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.innerText = `Lvl ${level}`;
+            if (level === 3) {
+                el.style.color = 'var(--success)';
+            } else if (level > 0) {
+                el.style.color = '#eab308'; // orange
+            } else {
+                el.style.color = 'var(--danger)'; // red
+            }
+        }
+
+        function getDirection(deg) {
+            const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+            const index = Math.round(((deg % 360) + 360) % 360 / 45) % 8;
+            return directions[index];
+        }
+            
+
+        function startAutoCalibration() {
+            const btn = document.getElementById('calibrate-btn');
+            const msg = document.getElementById('cal-status-msg');
+            if (!btn) return;
+            btn.disabled = true;
+            btn.style.opacity = '0.5';
+            msg.style.color = '#eab308';
+            msg.innerText = '⏳ Calibration running... Robot is moving.';
+
+            fetch('/calibrate', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'calibration_started') {
+                        msg.style.color = '#10b981';
+                        msg.innerText = '✅ Calibration started! Watch the Lvl badges above.';
+                        // Re-enable button after 2 minutes (max cal time)
+                        setTimeout(() => {
+                            btn.disabled = false;
+                            btn.style.opacity = '1';
+                            msg.innerText = 'Done. Check Lvl badges to confirm.';
+                        }, 120000);
+                    }
+                })
+                .catch(err => {
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                    msg.style.color = 'var(--danger)';
+                    msg.innerText = '❌ Could not start calibration: ' + err;
+                });
+        }
+
+function connectSSE() {
+            if (eventSource) {
+                eventSource.close();
+            }
+            
+            eventSource = new EventSource('/events');
+            
+            eventSource.onopen = () => {
+                connectionActive = true;
+                statusDot.classList.add('connected');
+                statusText.innerText = "CONNECTED (I2C BUS 2)";
+                statusText.style.color = "var(--success)";
+            };
+            
+            eventSource.onerror = (e) => {
+                connectionActive = false;
+                statusDot.classList.remove('connected');
+                statusText.innerText = "DISCONNECTED";
+                statusText.style.color = "var(--danger)";
+                lastTimestamp = null;
+                // Retry connection in 3 seconds
+                setTimeout(connectSSE, 3000);
+            };
+            
+            eventSource.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                // Get telemetry values
+                const ax = data.ax;
+                const ay = data.ay;
+                const az = data.az;
+                const gx = data.gx;
+                const gy = data.gy;
+                const gz = data.gz;
+                const temp = data.temp;
+                const mx = data.mx !== undefined ? data.mx : 0.0;
+                const my = data.my !== undefined ? data.my : 0.0;
+                const mz = data.mz !== undefined ? data.mz : 0.0;
+                const c_sys = data.c_sys !== undefined ? data.c_sys : 0;
+                const c_gyro = data.c_gyro !== undefined ? data.c_gyro : 0;
+                const c_acc = data.c_acc !== undefined ? data.c_acc : 0;
+                const c_mag = data.c_mag !== undefined ? data.c_mag : 0;
+                
+
+                // Additional parameters from UDP packet
+                const online = data.online;
+                const state = data.state || "STANDBY";
+                const Xn = data.Xn !== undefined ? data.Xn : 0.0;
+                const Yn = data.Yn !== undefined ? data.Yn : 0.0;
+                const fwd_safe_pct = data.fwd_safe_pct !== undefined ? data.fwd_safe_pct : 1.0;
+                const rev_safe_pct = data.rev_safe_pct !== undefined ? data.rev_safe_pct : 1.0;
+                const swd_on = data.swd_on;
+                const rc_ok = data.rc_ok;
+                const enc_l = data.enc_l !== undefined ? data.enc_l : 0.0;
+                const enc_r = data.enc_r !== undefined ? data.enc_r : 0.0;
+
+                // Time delta calculation
+                const now = Date.now();
+                let dt = 0.02; // default guess 50Hz (0.02s)
+                if (lastTimestamp) {
+                    dt = (now - lastTimestamp) / 1000.0;
+                }
+                lastTimestamp = now;
+
+                // 4. Run Complementary Filter for Pitch and Roll estimation
+                // For accelerometer angles:
+                // Pitch: rotation around lateral Y axis
+                // Roll: rotation around longitudinal X axis
+                if (data.f_yaw !== undefined && data.f_roll !== undefined && data.f_pitch !== undefined) {
+                    yaw = data.f_yaw;
+                    roll = data.f_roll;
+                    pitch = data.f_pitch;
+                } else {
+                    const accelPitch = Math.atan2(-ax, Math.sqrt(ay * ay + az * az)) * 180.0 / Math.PI;
+                    const accelRoll = Math.atan2(ay, Math.sqrt(ax * ax + az * az)) * 180.0 / Math.PI;
+                    pitch = 0.98 * (pitch + gy * dt) + 0.02 * accelPitch;
+                    roll = 0.98 * (roll + gx * dt) + 0.02 * accelRoll;
+                    yaw -= gz * dt;
+                }
+
+                // Update text UI values
+                document.getElementById('pitch-roll').innerText = `Roll: ${roll > 0 ? '+' : ''}${roll.toFixed(1)}° / Pitch: ${pitch > 0 ? '+' : ''}${pitch.toFixed(1)}°`;
+                document.getElementById('roll-val').innerText = `${roll > 0 ? '+' : ''}${roll.toFixed(1)}°`;
+                document.getElementById('pitch-val').innerText = `${pitch > 0 ? '+' : ''}${pitch.toFixed(1)}°`;
+                document.getElementById('yaw-val').innerText = `${yaw > 0 ? '+' : ''}${yaw.toFixed(1)}°`;
+                
+                document.getElementById('acc-z-val').innerText = `${az > 0 ? '+' : ''}${az.toFixed(2)}g`;
+                document.getElementById('gyro-z-val').innerText = `${gz > 0 ? '+' : ''}${gz.toFixed(1)}°/s`;
+                document.getElementById('temp-val').innerText = temp ? `${temp.toFixed(1)}°C` : '--°C';
+                document.getElementById('mag-x-val').innerText = `${mx > 0 ? '+' : ''}${mx.toFixed(1)} µT`;
+                document.getElementById('mag-y-val').innerText = `${my > 0 ? '+' : ''}${my.toFixed(1)} µT`;
+                document.getElementById('mag-z-val').innerText = `${mz > 0 ? '+' : ''}${mz.toFixed(1)} µT`;
+                const magField = Math.sqrt(mx*mx + my*my + mz*mz);
+                document.getElementById('mag-total').innerText = `Total Mag: ${magField.toFixed(1)} µT`;
+                updateCalBadge('cal-sys-val', c_sys);
+                updateCalBadge('cal-gyro-val', c_gyro);
+                updateCalBadge('cal-acc-val', c_acc);
+                updateCalBadge('cal-mag-val', c_mag);
+                
+                const compassDial = document.getElementById('compass-dial');
+                if (compassDial) {
+                    compassDial.style.transform = `rotate(${-yaw}deg)`;
+                    document.getElementById('compass-deg-val').innerText = `${Math.round(yaw)}°`;
+                    document.getElementById('compass-dir-val').innerText = getDirection(yaw);
+                }
+                
+
+                // Gravity magnitude
+                const gMag = Math.sqrt(ax * ax + ay * ay + az * az);
+                document.getElementById('mag-g').innerText = `Total G: ${gMag.toFixed(2)}g`;
+
+                // Update new UI elements
+                document.getElementById('enc-l-r').innerText = `L: ${enc_l > 0 ? '+' : ''}${enc_l.toFixed(1)} / R: ${enc_r > 0 ? '+' : ''}${enc_r.toFixed(1)}`;
+                document.getElementById('enc-l-val').innerText = `${enc_l > 0 ? '+' : ''}${enc_l.toFixed(1)}`;
+                document.getElementById('enc-r-val').innerText = `${enc_r > 0 ? '+' : ''}${enc_r.toFixed(1)}`;
+
+                const speedLimit = Yn >= 0 ? fwd_safe_pct : rev_safe_pct;
+                document.getElementById('flysky-state').innerText = `${state} (${online ? "ACTIVE" : "STANDBY"})`;
+                document.getElementById('flysky-state').style.color = online ? (rc_ok ? "var(--success)" : "var(--danger)") : "var(--text-muted)";
+                document.getElementById('stick-x-val').innerText = `${Xn > 0 ? '+' : ''}${Xn.toFixed(2)}`;
+                document.getElementById('stick-y-val').innerText = `${Yn > 0 ? '+' : ''}${Yn.toFixed(2)}`;
+                document.getElementById('speed-lim-val').innerText = `${Math.round(speedLimit * 100)}%`;
+
+                // Rotate wheels of 3D model relative to encoder speeds!
+                const left_rot_delta = (enc_l * 2 * Math.PI / 60.0) * dt;
+                const right_rot_delta = (enc_r * 2 * Math.PI / 60.0) * dt;
+                wheels[0].rotation.y += left_rot_delta;
+                wheels[2].rotation.y += left_rot_delta;
+                wheels[1].rotation.y += right_rot_delta;
+                wheels[3].rotation.y += right_rot_delta;
+
+                // Update status indicator based on UGV loop connection
+                if (online) {
+                    statusDot.classList.add('connected');
+                    statusText.innerText = rc_ok ? "CONNECTED (UGV LOOP ACTIVE)" : "CONNECTED (NO RC SIGNAL)";
+                    statusText.style.color = rc_ok ? "var(--success)" : "var(--danger)";
+                } else {
+                    statusDot.classList.remove('connected');
+                    statusText.innerText = "STANDBY (WAITING FOR UGV LOOP)";
+                    statusText.style.color = "var(--text-muted)";
+                }
+
+                // Update Accelerometer Chart
+                accelChart.data.datasets[0].data.push(ax);
+                accelChart.data.datasets[0].data.shift();
+                accelChart.data.datasets[1].data.push(ay);
+                accelChart.data.datasets[1].data.shift();
+                accelChart.data.datasets[2].data.push(az);
+                accelChart.data.datasets[2].data.shift();
+                accelChart.update();
+
+                // Update Gyroscope Chart
+                gyroChart.data.datasets[0].data.push(gx);
+                gyroChart.data.datasets[0].data.shift();
+                gyroChart.data.datasets[1].data.push(gy);
+                gyroChart.data.datasets[1].data.shift();
+                gyroChart.data.datasets[2].data.push(gz);
+                gyroChart.data.datasets[2].data.shift();
+                gyroChart.update();
+            };
+        }
+
+        // Reset Yaw Integration
+        function resetYaw() {
+            yaw = 0.0;
+        }
+
+        // Start SSE connection
+        connectSSE();
+
+        // 5. Trigger Calibration
+        function startCalibration() {
+            const modal = document.getElementById('cal-modal');
+            const progressFill = document.getElementById('progress-fill');
+            const subtext = document.getElementById('cal-subtext');
+            
+            modal.style.display = 'flex';
+            progressFill.style.width = '0%';
+            subtext.innerText = "Connecting to calibration task...";
+
+            // Close active stream to release I2C bus contention
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            // Call /calibrate route
+            fetch('/calibrate', { method: 'POST' })
+            .then(res => {
+                if (res.status === 200) {
+                    let progress = 0;
+                    const duration = 13000; // ~13 seconds total (3s setup + 10s sample)
+                    const intervalTime = 100;
+                    const increment = (intervalTime / duration) * 100;
+                    
+                    const timer = setInterval(() => {
+                        progress += increment;
+                        if (progress >= 100) {
+                            progress = 100;
+                            clearInterval(timer);
+                            subtext.innerText = "Calibration completed! Saving offsets...";
+                            setTimeout(() => {
+                                modal.style.display = 'none';
+                                pitch = 0;
+                                roll = 0;
+                                yaw = 0;
+                                lastTimestamp = null;
+                                connectSSE(); // Reconnect stream
+                            }, 1000);
+                        }
+                        progressFill.style.width = `${progress}%`;
+                        
+                        if (progress < 25) {
+                            subtext.innerText = "Initializing IMU... Keep flat and still.";
+                        } else {
+                            subtext.innerText = `Sampling 500 calibration points... (${Math.round((progress - 25) / 75 * 100)}%)`;
+                        }
+                    }, intervalTime);
+                } else {
+                    alert("Calibration failed to start. Is the service busy?");
+                    modal.style.display = 'none';
+                    connectSSE();
+                }
+            })
+            .catch(err => {
+                alert(`Error triggering calibration: ${err}`);
+                modal.style.display = 'none';
+                connectSSE();
+            });
+        }
+    </script>
+</body>
+</html>
+"""
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+class IMURequestHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path == "/calibrate":
+            import subprocess, threading
+            def _run():
+                subprocess.run(
+                    ["sudo", "PYTHONPATH=/home/debian/.local/lib/python3.11/site-packages", "python3", "/home/debian/Robot/auto_calibrate_bno055.py"],
+                    stdout=open("/home/debian/Robot/logs/calibration.log", "w"),
+                    stderr=subprocess.STDOUT
+                )
+            threading.Thread(target=_run, daemon=True).start()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b'{"status":"calibration_started"}')
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+    def do_GET(self):
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(HTML_CONTENT.encode('utf-8'))
+            
+        elif self.path in ('/js/three.min.js', '/js/chart.js'):
+            local_file = "/home/debian/Robot/www" + self.path
+            if os.path.exists(local_file):
+                self.send_response(200)
+                self.send_header('Content-type', 'application/javascript')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                with open(local_file, 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_response(404)
+                self.end_headers()
+                
+        elif self.path == '/events':
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('Connection', 'keep-alive')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
+            try:
+                while True:
+                    data = get_latest_telemetry()
+                    event_str = f"data: {json.dumps(data)}\n\n"
+                    self.wfile.write(event_str.encode('utf-8'))
+                    self.wfile.flush()
+                    time.sleep(0.02)
+            except (ConnectionResetError, BrokenPipeError, Exception):
+                pass
+
+    def do_POST(self):
+        if self.path == '/calibrate':
+            print("[Web Server] Triggering calibration subprocess...")
+            try:
+                proc = subprocess.Popen(["python3", "/home/debian/Robot/calibrate_imu.py", "--auto"])
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "started"}).encode('utf-8'))
+                proc.wait()
+            except Exception as e:
+                print(f"[Web Server] Calibration failed: {e}")
+                self.send_response(500)
+                self.end_headers()
+
+def main():
+    # Start the UDP background listener & Direct I2C Poller thread
+    t = threading.Thread(target=telemetry_source_thread, daemon=True)
+    t.start()
+    
+    server_address = ('', 8080)
+    httpd = ThreadedHTTPServer(server_address, IMURequestHandler)
+    print("\n" + "="*60)
+    print("UGV IMU STANDALONE Visualization Server is Running!")
+    print("This server runs when UGV robot.service is stopped/off.")
+    print("Navigate to: http://192.168.7.2:8080/")
+    print("="*60 + "\n")
+    
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[Web Server] Shutting down...")
+    finally:
+        httpd.server_close()
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,22 @@
+# RPi_companion — Python dependencies for the Raspberry Pi 5 autonomous stack.
+#
+# System packages needed FIRST (adafruit-blinka's lgpio backend builds from
+# source on the Pi 5 — no prebuilt wheel — and needs these to compile/link;
+# found by trial on a real Pi 5 running Debian 13 "trixie", not documented
+# anywhere upstream):
+#
+#   sudo apt-get install -y swig liblgpio-dev
+#
+# Then, install inside a venv (Raspberry Pi OS blocks system-wide pip
+# installs under PEP 668 unless you pass --break-system-packages):
+#
+#   python3 -m venv ~/rover-venv
+#   source ~/rover-venv/bin/activate
+#   pip install -r requirements.txt
+#
+# adafruit-blinka is the CircuitPython compatibility layer that makes
+# board.I2C() work on a Raspberry Pi (Pi 5 supported since blinka ~8.20+,
+# 2023). It auto-detects the board from /proc/cpuinfo / device-tree at
+# import time — no manual board selection needed.
+adafruit-blinka>=8.30.0
+adafruit-circuitpython-bno055>=5.4.0

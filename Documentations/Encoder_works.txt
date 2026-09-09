@@ -1,0 +1,160 @@
+██  RESOLVED — ENCODER READING BROUGHT ONLINE AND VERIFIED                 ██
+██  Confirmed working on hardware. Encoders now report correct RPM.        ██
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ── THE GOAL ────────────────────────────────────────────────────────────
+
+  The encoders had never been physically connected on the STM32 build. The
+  encoder driver (encoder.c) had been written back in Session 1 and was
+  already being called every loop tick from main.c — Encoder_Init() and
+  Encoder_Update() were running — but nothing displayed the result, so
+  there was no way to know whether it worked. This was therefore an OUTPUT
+  problem, not a "write the encoder driver" problem.
+
+  Encoder pins (from Core/Inc/main.h + Rover.ioc — the authoritative
+  source; the old Section 2 table was stale and has been corrected):
+      Left  encoder A/B  →  PA0 / PA1   (TIM2, 32-bit, Encoder Mode TI12)
+      Right encoder A/B  →  PA6 / PA7   (TIM3, 16-bit, Encoder Mode TI12)
+
+  ── HOW THE VALUES WERE GOT OUT — THREE ROUTES TRIED ────────────────────
+
+  ROUTE 1 — SWV / ITM trace over SWO (ABANDONED)
+    Plan was to print via ITM to CubeIDE's SWV ITM Data Console. Required
+    enabling SYS → Debug = "Trace Asynchronous Sw" in CubeMX (PB3 = SWO),
+    which was done and regenerated cleanly (verified: I2C still 100 kHz,
+    no duplicate IRQ handlers, USER CODE intact, cold-boot fix preserved).
+    ABANDONED because the CubeIDE debug session would not launch at all:
+        Failed to start GDB server
+        Error in initializing ST-LINK device.
+        Reason: (1) Failed to connect to device.
+    This failed even with SWV unticked, so it was not an SWV problem.
+    Diagnosis showed the ST-Link WAS enumerated on USB (0483:3748) with no
+    stale GDB server holding it, and STM32CubeProgrammer connected and
+    flashed fine — so the hardware/probe/cabling were all good and the
+    fault was specific to the CubeIDE launch configuration. Since SWV
+    fundamentally REQUIRES a live debug session, this route was dropped
+    rather than fought further.
+
+  ROUTE 2 — USB CDC on the Black Pill's USB-C port (REJECTED, not attempted)
+    Rejected after analysis, on a hard technical blocker: USB Full Speed
+    needs exactly 48 MHz from PLLQ, and the current clock tree gives 50 MHz
+        HSI 16 → PLLM 8 → 2 MHz → PLLN 100 → 200 MHz VCO
+                 → PLLP 2 → 100 MHz SYSCLK ✓
+                 → PLLQ 4 →  50 MHz USB    ✗ (needs 48)
+    On STM32F411 the USB clock can ONLY come from PLLQ (no PLLSAI/CK48M mux
+    like the larger F4 parts), so there is no way to have both 100 MHz
+    SYSCLK and valid USB. The only valid combination is a 192 MHz VCO →
+    96 MHz SYSCLK + 48 MHz USB. That would have dropped HCLK 100 → 96 MHz,
+    which silently breaks the TIM5 microsecond timebase (prescaler 99 gives
+    0.96 MHz instead of 1 MHz — every delay, the RC timeout, the loop
+    period, the contactor debounce and the DAC ramp all 4 % off) and would
+    have needed TIM5 prescaler 99 → 95 in the same step, plus USB_DEVICE
+    CDC middleware and a large regeneration. Judged far too much
+    interconnected change at once for the benefit.
+
+  ROUTE 3 — UART → ESP32 → USB serial monitor  ✅ ADOPTED AND WORKING
+    STM32 PA9 (USART1_TX) → ESP32 DevKit V1 GPIO16 (RX2), plus common GND.
+    ESP32 runs a pass-through sketch bridging its UART2 to USB, read in the
+    Arduino IDE Serial Monitor at 115200.
+    Chosen because it needed ZERO CubeMX changes (PA9 was already
+    configured as USART1_TX with UART_MODE_TX_RX), no clock change, no
+    debugger, and works with the CubeProgrammer flash workflow that was
+    already functioning. It also aligns with an existing roadmap item —
+    Section 7 already called for "telemetry → UART to ESP32/ESP8266".
+
+  ── CRITICAL WIRING RULE ────────────────────────────────────────────────
+
+  ONE DIRECTION ONLY: STM32 PA9 → ESP32 GPIO16, plus GND.
+  NOTHING may be connected to STM32 PA10. PA10 is USART1_RX and carries the
+  FlySky iBUS signal; driving it from the ESP32 would collide with the RC
+  link and break control while motors are armed.
+  Both devices are 3.3 V logic, so PA9 connects directly — no level shifter.
+
+  ── CODE ADDED ──────────────────────────────────────────────────────────
+
+  Core/Inc/encoder.h + Core/Src/encoder.c
+    · Encoder_GetCount_L() / Encoder_GetCount_R() — expose the raw extended
+      counter values (return prev_count_l / prev_count_r, the values
+      Encoder_Update() last sampled). Deliberately printed ALONGSIDE RPM:
+      raw counts prove the hardware and wiring work, RPM proves the maths
+      works. Counts moving with RPM wrong = firmware bug; counts frozen =
+      wiring/pin problem. Separating those saves a debugging cycle.
+
+  Core/Src/main.c
+    · _DbgPutc() — writes USART1->DR DIRECTLY, deliberately NOT via
+      HAL_UART_Transmit(). REASON: HAL_UART_Transmit() takes
+      __HAL_LOCK(huart1) and holds it for the entire blocking send; if the
+      iBUS IDLE interrupt fires in that window, the HAL_UART_Receive_DMA()
+      inside IBUS_IdleCallback() returns HAL_BUSY, the RX DMA is never
+      restarted and RC frames are dropped. With iBUS frames every ~7 ms and
+      a multi-ms send, collisions would be frequent — unacceptable with
+      motors powered. TX and RX are independent paths inside the USART, so
+      a direct DR write cannot disturb the RX DMA and never touches the
+      HAL lock.
+      The TXE busy-wait is hardware-bounded (~87 us/char at 115200) since
+      the transmitter always drains whether or not anything is listening —
+      so it can never stall the 20 Hz loop, and it is safe even with
+      nothing connected to PA9.
+    · _DbgPuts() — string wrapper.
+    · _FmtRpm() — formats a float RPM as e.g. "+12.50" WITHOUT using %f.
+      newlib-nano omits float formatting unless -u _printf_float is added
+      to the linker flags, and silently prints nothing or garbage
+      otherwise. Formats via scaled integers instead to sidestep it.
+    · Debug print block in the main loop, rate-limited to ~4 Hz (every 5th
+      tick of the 20 Hz loop). At full 20 Hz a ~70-char line would cost
+      ~10 % of every loop cycle; at 4 Hz it is ~2 % and far more readable.
+
+  esp32_bridge/esp32_bridge.ino  (new file, outside the STM32 project)
+    ESP32 DevKit V1 pass-through bridge: Serial2 (GPIO16) → Serial (USB).
+    Includes a watchdog message if no data arrives for 3 s, which
+    distinguishes "bridge broken" from "STM32 not transmitting" — those
+    otherwise look identical (a blank screen) and waste debugging time.
+    NOTE: GPIO16/17 are free on WROOM-32 (DevKit V1). On WROVER modules
+    those pins are used for PSRAM — use GPIO25/26 there instead.
+
+  ── OUTPUT FORMAT ───────────────────────────────────────────────────────
+
+      CMD L+6.00 R+6.00 | ENC L+5.92 R+6.05 | cnt 412 419
+
+      CMD = commanded wheel RPM from the pipeline
+      ENC = measured wheel RPM from the encoders
+      cnt = raw quadrature counter values (left, right)
+
+    Printing commanded and measured side by side answers several questions
+    in one line: is the encoder wired, is its direction correct, and does
+    the RPM maths agree with what was asked for. It is also exactly the
+    signal needed later for PID tuning.
+
+    Interpreting it:
+      · CMD and ENC same sign, magnitudes close   → working correctly
+      · ENC sign OPPOSITE to CMD on one wheel     → that encoder's A/B
+                                                    phases are swapped
+      · One side stuck at +0.00, cnt frozen       → that encoder not wired
+      · cnt moves but ENC stays 0.00              → turning too slowly;
+                                                    ENC_STOPPED_US (500 ms)
+                                                    is zeroing the reading
+
+  ── RESULT ──────────────────────────────────────────────────────────────
+
+  CONFIRMED WORKING on hardware — encoders read RPM correctly.
+
+  ── STILL OPEN (known, deliberately deferred) ───────────────────────────
+
+  · TIM3 (right encoder) 16-bit overflow is STILL untracked. TIM3_IRQn
+    remains masked at the NVIC, so Encoder_TIM3_OvfCallback() never fires
+    and enc_r_overflow never updates. Expect ONE large bogus ENC R value
+    roughly every 82 s of continuous rotation at full wheel speed (~4.5 min
+    at the 30 % SWC cap), then normal readings resume. Left wheel (TIM2,
+    32-bit) is unaffected — it would not wrap for ~2 months.
+    Periodic spikes on R ONLY are this known issue, NOT a wiring fault.
+    The correct fix is already worked out: POLL the Update flag inside
+    Encoder_Update(), do NOT re-enable the interrupt (that approach caused
+    the Bug #5 full MCU lockup — HAL_TIM_Encoder_Start_IT() enables CC1/CC2
+    edge interrupts, not Update, so an ISR that only clears the Update flag
+    never clears the flag that woke it and re-fires forever).
+  · Low-speed resolution is inherently coarse: one count = 0.5 RPM with the
+    50 ms sampling window, so slow running looks steppy. Fine for
+    telemetry; relevant when PID tuning starts.
+  · The SYS → Debug = "Trace Asynchronous Sw" CubeMX setting is now unused
+    (SWV route abandoned). Harmless to leave; can be reverted to plain
+    "Serial Wire" whenever convenient.

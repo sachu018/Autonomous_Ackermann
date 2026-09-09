@@ -1,0 +1,173 @@
+================================================================================
+          STM32F411CEU6 (BLACK PILL) TO MD10C R3 LINEAR ACTUATOR GUIDE
+================================================================================
+
+1. SYSTEM OVERVIEW & HARDWARE CONNECTIONS
+--------------------------------------------------------------------------------
+This subsystem controls a 12V DC Linear Actuator using an STM32F411CEU6 
+(Black Pill) board and a Cytron MD10C R3 DC Motor Driver. 
+
+Pin Mapping Table:
+--------------------------------------------------------------------------------
+STM32 Pin   | MD10C Pin | Subsystem Signal | Notes
+--------------------------------------------------------------------------------
+PA8         | PWM       | TIM1_CH1 PWM     | Controls motor speed (0 - 100%)
+PA5         | DIR       | GPIO Output      | Sets direction (HIGH/LOW)
+GND         | GND       | Common Ground    | MANDATORY common ground connection
+--          | POWER +   | 12V DC Power     | Connect to 12V High-Current Supply
+--          | POWER -   | 12V Power Ground | Connect to 12V Supply Ground
+--          | MOTOR A   | Actuator Lead 1  | Terminal to linear actuator
+--          | MOTOR B   | Actuator Lead 2  | Terminal to linear actuator
+
+CRITICAL HARDWARE RULES:
+1. Connect STM32 GND and 12V Power Supply GND together.
+2. MD10C supports 3.3V logic directly on PWM and DIR header pins. Do NOT apply 
+   12V to PWM or DIR inputs.
+
+
+2. STM32CUBEMX CONFIGURATION STEPS
+--------------------------------------------------------------------------------
+Step 1: System Core Setup
+  - System Core -> RCC: Set High Speed Clock (HSE) to "Crystal/Ceramic Resonator" 
+    (25 MHz on standard Black Pill).
+  - System Core -> SYS: Set Debug to "Serial Wire" (preserves SWD pins PA13/PA14).
+
+Step 2: Motor Driver GPIO Setup
+  - Click Pin PA5 on the chip layout -> Select "GPIO_Output".
+  - System Core -> GPIO -> PA5:
+      * GPIO output level: Low
+      * GPIO mode: Output Push Pull
+      * Maximum output speed: Medium / High
+
+Step 3: PWM Timer Setup (TIM1)
+  - Timers -> TIM1:
+      * Clock Source: Internal Clock
+      * Channel 1: PWM Generation CH1 (Assigned to pin PA8)
+  - Parameter Settings:
+      * Prescaler (PSC): 83 (For 84 MHz / 100 MHz APB2 timer clock -> 1 MHz tick)
+      * Counter Period (AutoReload Register - ARR): 999 (Yields ~1 kHz PWM frequency)
+      * Internal Clock Division: No Division
+      * Auto-reload preload: Enable
+
+Step 4: Clock Configuration
+  - Set Input Frequency (HSE): 25 MHz
+  - Select HSE -> PLLCLK -> Set HCLK to 100 MHz (or 84 MHz)
+  - APB1 Prescaler: Set to /2 (PCLK1 Max is 50 MHz!)
+  - APB2 Prescaler: Set to /1 (PCLK2 Max is 100 MHz)
+
+Step 5: Code Generator Settings
+  - Project Manager Tab -> Toolchain / IDE: STM32CubeIDE
+  - Code Generator Settings: Check "Generate peripheral initialization as a pair 
+    of '.c/.h' files per peripheral"
+  - Click "GENERATE CODE"
+
+
+3. STM32CUBEIDE FIRMWARE IMPLEMENTATION
+--------------------------------------------------------------------------------
+Add the following functions and calls into your main.c file:
+
+[main.c Snippet]
+
+/* USER CODE BEGIN PFP */
+void Set_Actuator(int direction, uint8_t speed_percent);
+/* USER CODE END PFP */
+
+int main(void)
+{
+  HAL_Init();
+  SystemClock_Config();
+
+  MX_GPIO_Init();
+  MX_TIM1_Init();
+
+  /* USER CODE BEGIN 2 */
+  // MANDATORY: Start PWM output on TIM1 Channel 1 (PA8)
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+  /* USER CODE END 2 */
+
+  while (1)
+  {
+      // Example Test Routine:
+      Set_Actuator(1, 100);  // Extend at 100% speed
+      HAL_Delay(3000);
+
+      Set_Actuator(0, 0);    // Stop motor
+      HAL_Delay(1000);
+
+      Set_Actuator(-1, 100); // Retract at 100% speed
+      HAL_Delay(3000);
+
+      Set_Actuator(0, 0);    // Stop motor
+      HAL_Delay(1000);
+  }
+}
+
+/* USER CODE BEGIN 4 */
+/**
+  * @brief Controls MD10C Direction and PWM Speed
+  * @param direction: 1 = Extend, -1 = Retract, 0 = Stop
+  * @param speed_percent: Speed from 0 to 100%
+  */
+void Set_Actuator(int direction, uint8_t speed_percent) {
+    if (speed_percent > 100) speed_percent = 100;
+    
+    // Scale 0-100% to Timer ARR value (999)
+    uint32_t pulse = (speed_percent * 999) / 100;
+
+    if (direction > 0) { // Extend
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pulse);
+    } else if (direction < 0) { // Retract
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pulse);
+    } else { // Stop
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+    }
+}
+/* USER CODE END 4 */
+
+
+4. STM32CUBEPROGRAMMER FLASHING PROCEDURE
+--------------------------------------------------------------------------------
+1. Connect ST-Link V2 Programmer to Black Pill:
+   - ST-Link SWCLK -> Black Pill PA14 (SWCLK)
+   - ST-Link SWDIO -> Black Pill PA13 (SWDIO)
+   - ST-Link GND   -> Black Pill GND
+   - ST-Link 3.3V  -> Black Pill 3.3V
+2. Plug ST-Link into PC USB port.
+3. Open STM32CubeProgrammer.
+4. Select "ST-LINK" in the right interface pane (Port: SWD).
+5. Click "Connect".
+6. Navigate to "Open File" -> Select your generated `.elf` or `.hex` file 
+   from STM32CubeIDE build output (`Debug/` or `Release/` directory).
+7. Click "Download" to flash code into the microchip.
+
+
+5. KNOWN ERRORS, COULD-HAPPEN ISSUES & SOLUTIONS
+--------------------------------------------------------------------------------
+
+[ERROR 1] Clock Configuration Warning (Pink APB1 Clock Box in CubeMX)
+- Cause: APB1 Prescaler set to /1 while SYSCLK is 100MHz, exceeding APB1 50MHz limit.
+- Symptom: CubeMX displays "Warning: Code Generation - Main Config wrong parameter values [Clock]".
+- Solution: In CubeMX Clock Configuration tab, set "APB1 Prescaler" dropdown to /2.
+
+[ERROR 2] Motor Does Not Turn / Spins Very Weakly
+- Cause A: TIM1 Counter Period (ARR) left at default value (65535) instead of 999.
+  * Solution: Update TIM1 ARR in CubeMX to 999.
+- Cause B: Forgot to call `HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);` in `main.c`.
+  * Solution: Call `HAL_TIM_PWM_Start()` under `/* USER CODE BEGIN 2 */`.
+- Cause C: Ground loop missing between STM32 and 12V Power Supply.
+  * Solution: Connect STM32 GND to MD10C GND and 12V PSU Ground.
+
+[ERROR 3] Motor Extends When Called Retract (Swapped Direction)
+- Cause: Actuator lead wires (Motor A / Motor B) connected in reverse polarity.
+- Solution: Swap Motor A and Motor B leads on the MD10C terminal block.
+
+[ERROR 4] "ST-Link Error: Target Not Found" in STM32CubeProgrammer
+- Cause A: Black Pill BOOT0 jumper set incorrectly or missing power.
+  * Solution: Ensure BOOT0 jumper is on 0 position and 3.3V power LED is lit.
+- Cause B: SWD debug disabled in CubeMX.
+  * Solution: In CubeMX SYS menu, set Debug to "Serial Wire". If locked out, press 
+    and hold RST on Black Pill, click Connect in STM32CubeProgrammer, then release RST.
+
+================================================================================

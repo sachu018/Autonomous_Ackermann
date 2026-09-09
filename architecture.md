@@ -1,0 +1,228 @@
+# Architecture Plan & System Design — Closed-Loop Ackermann Steering
+
+## 1. System Overview & Platform Context
+The Agriculture Rover is a robotic platform powered by the **STM32F411CEU6 (Black Pill)** microcontroller (running bare-metal C with STM32Cube HAL at 100 MHz).
+
+The closed-loop Ackermann version operates in the **`Rover_closed_loop/`** project directory, leaving the original open-loop `Rover/` codebase untouched as a verified fallback.
+
+### Hardware Interconnects & Pin Allocation
+| Pin | Function | Peripheral / Mode | Purpose |
+|---|---|---|---|
+| **PA10** | iBUS RX | USART1_RX (DMA2 Stream 2) | FlySky FS-iA6B RC receiver stream (115200 baud) |
+| **PA9** | Telemetry TX | USART1_TX (Direct register DR) | ESP32 telemetry bridge (115200 baud) |
+| **PA8** | Actuator PWM | TIM1_CH1 (PWM Generation) | MD10C speed input (0–100% duty) |
+| **PA5** | Actuator DIR | GPIO Output (`Actuator_DIR`) | MD10C direction input (HIGH=Extend/Left, LOW=Retract/Right) |
+| **PB6** | I2C1 SCL | I2C1 (100 kHz Standard Mode) | Shared bus: MCP4725 DACs (0x60, 0x61) + ADS1115 ADC (0x48) |
+| **PB7** | I2C1 SDA | I2C1 (100 kHz Standard Mode) | Shared bus: MCP4725 DACs (0x60, 0x61) + ADS1115 ADC (0x48) |
+| **PB0** | Contactor | GPIO Output PP | Main motor controller power relay |
+| **PB1** | Rev Left | GPIO Output PP | Left motor controller reverse direction |
+| **PB10** | Brake Left | GPIO Output PP | Left motor controller brake |
+| **PB12** | Brake Right | GPIO Output PP | Right motor controller brake |
+| **PB13** | Rev Right | GPIO Output PP | Right motor controller reverse direction |
+| **PA0 / PA1** | Encoder L | TIM2 (32-bit, TI12 Mode) | Left wheel shaft optical encoder |
+| **PA6 / PA7** | Encoder R | TIM3 (16-bit, TI12 Mode) | Right wheel shaft optical encoder |
+| **PC13** | Status LED | GPIO Output PP (Active-LOW) | Onboard diagnostic fault indicator |
+| **PA2** | RPi TX | USART2_TX | → RPi5 Pin10 / GPIO15 (RXD) — command/feedback link, firmware flashed, RPi side not yet wired/tested |
+| **PA3** | RPi RX | USART2_RX | ← RPi5 Pin8 / GPIO14 (TXD) — command/feedback link, firmware flashed, RPi side not yet wired/tested |
+
+---
+
+## 2. Decoupled Closed-Loop Control Architecture
+
+The system decouples steering from propulsion to prevent tire scrubbing and guarantee kinematic accuracy:
+
+```
+[RC Joystick X] ──→ Target Steering Angle δ_target (−45° to +45°)
+                             │
+                             ▼
+[Steering Loop] ────→ Steer PID (Derivative-on-Measurement) ──→ MD10C (PA8/PA5) ──→ Linear Actuator
+                             ▲                                                              │
+                             │                                                              ▼
+                      Measured Angle δ_actual ◄── ADS1115 (0x48, AIN0/AIN1) ◄── 2× 10k Potentiometers
+                             │
+                             ▼
+[Propulsion Loop] ──→ Ackermann Electronic Differential (tan(δ)) ──→ Rear Wheel DACs (Left/Right)
+                             ▲
+                             │
+[RC Joystick Y] ───→ Base Speed V_base
+```
+
+### 2.1 Steering Feedback Loop (`ads1115.c` & `actuator.c`)
+- **ADS1115 ADC:** Reads Left Wheel Angle (`AIN0`) and Right Wheel Angle (`AIN1`) over I2C1 at 860 SPS (~1.16 ms conversion).
+- **Fault Debounce:** Uses `STEER_FAULT_THRESHOLD = 5` consecutive bad reads before declaring a sensor failure; transient 1-tick glitches maintain the previous angle without stalling the actuator.
+- **Actuator Full-Speed Directional Control:**
+  - Because the linear actuator moves at ~7 mm/s max speed, it runs at **100% full speed** whenever outside the deadband ($\pm 0.5^\circ$), eliminating unnecessary speed throttling.
+  - When within $\pm 0.5^\circ$ of target angle, PWM stops (`0%`) and the linear actuator mechanically holds position.
+
+### 2.2 Propulsion & Differential Loop (`ackermann.c`)
+- **Kinematic Radius:** Uses exact bicycle model turning radius about the rear axle center:
+  $$R_{\text{rear}} = \frac{W_b}{\tan(\delta)}$$
+- **Wheel Speeds:**
+  $$V_{\text{right}} = V_{\text{base}} \left(1 + \frac{L_t}{2 R_{\text{rear}}}\right), \quad V_{\text{left}} = V_{\text{base}} \left(1 - \frac{L_t}{2 R_{\text{rear}}}\right)$$
+- **Standstill Pivot Mode:** Full steering deflection withholds drive until wheels swing past 80% of target lock ($36^\circ$), then locks the inner rear wheel at 0 RPM while the outer rear wheel crawls forward at ~7.5 RPM to pivot around the inner tire.
+
+---
+
+## 3. Autonomous Integration — Raspberry Pi Companion Computer (Planned)
+
+**Goal:** restore the autonomous waypoint-following capability the platform had on the BeagleBone Black (see `Documentations/Rover_study.md` §13 and `Old_files/UGV_closed/`), but re-architected around the STM32 as a real-time actuation server rather than the BBB's single-process "brain."
+
+### 3.1 Division of Responsibility
+
+| Layer | Runs on | Responsibility |
+|---|---|---|
+| **Guidance & sensing** | Raspberry Pi | IMU + RTK GNSS fusion, localization (UTM conversion), path/waypoint management, guidance law (P/ISMC → target `V`, `δ`) |
+| **Real-time actuation** | STM32F411 | Steering PID/bang-bang + ADS1115 feedback, Ackermann electronic differential, encoder feedback, contactor/arming, all existing RC failsafes |
+
+This is a deliberate inversion of the old BBB architecture, where the BBB itself ran guidance *and* drove the DACs/GPIO directly, and the RPi was only a passive RTK data source over TCP (`Old_files/UGV_closed/rtk_receiver.py`). Here, the RPi becomes the guidance brain; the STM32 keeps owning every safety-critical/real-time function it already owns today, and simply gains a second command source (UART from the RPi) alongside the existing RC iBUS source.
+
+### 3.2 Physical Link
+
+STM32 **USART2** (PA2 TX / PA3 RX) ↔ Raspberry Pi 5 primary UART (`GPIO14`/Pin8 TXD, `GPIO15`/Pin10 RXD), GND common. Configured in `Rover.ioc` and generated — see §3.6.
+
+Cross-connect (TX→RX both ways):
+| STM32 | RPi5 |
+|---|---|
+| PA3 (USART2_RX) | Pin8 / GPIO14 (TXD) |
+| PA2 (USART2_TX) | Pin10 / GPIO15 (RXD) |
+| GND | GND (any GND pin) |
+
+**✅ RPi5 setup complete and verified working** (link confirmed end-to-end, 20 Hz, zero corruption). Three things were needed, not just the console — see §3.6/§3.8 for the full story: (1) disable the login console on `GPIO14`/`GPIO15`, (2) disable onboard Bluetooth (`dtoverlay=disable-bt`, it silently claims the same UART), (3) `enable_uart=1` (the actual root cause of an extended debugging session — without it the pins are never muxed to UART at the hardware level at all).
+
+### 3.3 Mode Arbitration
+
+- **SWD** (unchanged): arms/disarms the contactor, exactly as today.
+- **SWB** (repurposed): was the 2-position reverse-speed-cap switch (`SWB_SPEED_LOW/HIGH` = 60%/100%); becomes a pure **MANUAL / AUTO** command-source select. Reverse-speed-cap feature is dropped — reverse runs at the same cap as forward once this lands (see scratchpad.md).
+- When armed **and** SWB = MANUAL → command source is RC iBUS (`Xn`, `Yn`), as today.
+- When armed **and** SWB = AUTO → command source is the UART link from the RPi (target steering angle `δ_target`, target speed `V_target`), fed into the same downstream steering PID / Ackermann differential the RC path already uses.
+
+### 3.4 UART Protocol (implemented in firmware, not yet hardware-tested)
+
+20 Hz, binary, fixed-size frames, matching the main loop's own rate.
+
+**Command frame — RPi → STM32:**
+| Field | Type | Meaning |
+|---|---|---|
+| header | `0xAA 0x55` | frame sync |
+| steer_target | `int16` (°×100) | target steering angle, −45.00° to +45.00° |
+| speed_target | `int16` (mm/s) | target linear speed, signed (+fwd / −rev) |
+| seq | `uint8` | rolling counter — reserved for detecting a stalled-but-connected RPi (repeated seq = link up, RPi logic frozen); parsed but **not yet acted on** in `rpi_link.c` |
+| checksum | `uint8` | XOR of all preceding bytes, same spirit as the existing iBUS checksum on PA10 |
+
+**Feedback frame — STM32 → RPi:**
+| Field | Type | Meaning |
+|---|---|---|
+| header | `0xBB 0x66` | frame sync |
+| angle_L, angle_R | `int16` each (°×100) | measured steering angle per wheel (ADS1115) |
+| rpm_L, rpm_R | `int16` each (RPM×10) | encoder wheel speed |
+| status | `uint8` bitfield | armed / steer-fault / actuator-fault / contactor state |
+| checksum | `uint8` | |
+
+### 3.5 Failsafe
+
+New `AUTO_UART_TIMEOUT_MS` (~300 ms, same order as the existing 400 ms RC timeout). If SWB = AUTO and no valid command frame arrives within that window, the STM32 forces `BRAKE` — same behavior class as RC signal loss today — regardless of the last command received. Flipping SWB back to MANUAL always hands control back to the RC sticks immediately, independent of UART link state.
+
+**Not yet decided:** whether stick deflection should also force a manual takeover while SWB is still in AUTO (the old BBB `safety.py` did this at a 15% threshold). Left open for now — SWB is the sole arbiter until/unless this is explicitly added.
+
+### 3.6 RPi-Side Software (`RPi_companion/`)
+
+New top-level directory for all Raspberry Pi 5 Python code — parallel to `Rover_closed_loop/` and `Documentations/`. Started with the IMU driver; guidance/localization/UART-client modules land here as they're built.
+
+**Hardware:** DFRobot Fermion BNO055 9-axis IMU, I2C1 on the RPi5's 40-pin header — VCC→Pin1 (3V3), SDA→Pin3 (GPIO2), SCL→Pin5 (GPIO3), GND→Pin6. Default I2C address `0x28` (ADR pin floating/low).
+
+| File | Purpose |
+|---|---|
+| `RPi_companion/requirements.txt` | `adafruit-blinka`, `adafruit-circuitpython-bno055` — same library family the old BBB stack used (`Old_files/dev_bak/test_imu.py`), continued here since Blinka now supports the Pi 5 |
+| `RPi_companion/imu.py` | `IMU` driver class — `board.I2C()` + `adafruit_bno055`, returns an `IMUData` sample (heading/roll/pitch deg, gyro_z rad/s, accel_x/y m/s², calibration status, `valid`). Fault handling deliberately mirrors `ads1115.c` on the STM32 side: holds the last valid sample across transient I2C glitches, only flips `valid=False` after `IMU_FAULT_THRESHOLD` (5) consecutive bad reads. Supports optional calibration-offset preload via `IMU_CALIBRATION_OFFSETS` |
+| `RPi_companion/test_imu.py` | Live readout script — **run this first** after wiring, before trusting `imu.py` in anything else, to confirm hardware/wiring/address are correct |
+| `RPi_companion/calibrate_imu.py` | Waits for full calibration (Sys/Gyro/Accel/Mag all = 3), then reads back and prints the sensor's internal offset registers in a form that pastes directly into `imu.py`'s `IMU_CALIBRATION_OFFSETS` |
+| `RPi_companion/uart_link.py` | `STM32Link` driver for the STM32 UART link (counterpart to `rpi_link.c`) — background thread parses feedback frames (header-scan + checksum, no hardware IDLE-line equivalent on this side), exposes `read()`/`send_command()`. Frame formats hand-copied from `rpi_link.c`'s header comment; the two sides have no shared schema file, keep them in sync manually if the protocol ever changes |
+| `RPi_companion/check_stm32_link.py` | Connectivity check — sends neutral (0,0) command frames, reports feedback frame rate/checksum failures/status bits. Sending is inert while SWB=MANUAL; proves the RX half (STM32→RPi) directly, the TX half only indirectly (see the script's own header comment for the caveat and why) |
+| `RPi_companion/read_encoders.py` | Passive live readout of wheel RPM + steering angle from the feedback frame — sends nothing, safe to run anytime including during manual driving |
+| `ESP32_uart_sniffer/ESP32_uart_sniffer.ino` | Read-only ESP32 tap on STM32 `PA2` (USART2_TX) only — isolates whether the STM32 is physically transmitting feedback frames, independent of the RPi's software/wiring entirely. Same one-way-bridge safety rule as the existing PA9 debug bridge: never connect its TX pin to `PA3` while the RPi is also wired there (two transmitters on one line). See §3.8 for the diagnostic session that motivated this. |
+
+**Setup checklist (on the RPi5 itself):**
+- [x] Disable the Linux serial console on `GPIO14`/`GPIO15` (Pin8/Pin10) — done directly (not via `raspi-config`, which wasn't present in this Debian 13 "trixie" image): `systemctl disable --now serial-getty@ttyAMA10.service` + removed `console=serial0,115200` from `/boot/firmware/cmdline.txt`. Confirmed `inactive`/`disabled` and non-regenerating after a reboot (the unit is runtime-generated from the `console=` kernel parameter, so removing that parameter is what actually makes it permanent, not the `disable` alone).
+- [x] Disable onboard Bluetooth (`dtoverlay=disable-bt`) — it silently claims the same UART as GPIO14/15 at boot, independent of the console-getty fix above. **Required, not optional, for this UART to work.** Disables BT on this Pi permanently (not used elsewhere in this project).
+- [x] Add `enable_uart=1` to `config.txt` — **this was the actual root cause of the "zero bytes" debugging session** (§3.8): without it, GPIO14/15 are never switched into UART alternate-function mode at the hardware level, even though `/dev/serial0` exists as a device node. Verify with `pinctrl get 14,15` → expect `GPIO14 = TXD0`, `GPIO15 = RXD0` (not `none`).
+- [x] Confirm I2C1 is enabled — uncommented `dtparam=i2c_arm=on` in `/boot/firmware/config.txt`, rebooted. Confirmed live: `i2cdetect -l` shows `i2c-1` ("Synopsys DesignWare I2C adapter"). `board.I2C()` correctly auto-detects `RASPBERRY_PI_5` with `SCL=GPIO3`/`SDA=GPIO2`.
+- [ ] `i2cdetect -y 1` with the sensor attached — confirm a device shows at `0x28` (or `0x29` if the ADR pin is strapped high; pass `address=0x29` to `IMU()` if so). **Blocked: IMU not physically connected this session** (Pi was on the bench, no peripherals).
+- [x] `python3 -m venv ~/rover-venv && source ~/rover-venv/bin/activate && pip install -r RPi_companion/requirements.txt` — needed two extra system packages first, not obvious from the Python package alone: `sudo apt-get install -y swig liblgpio-dev` (the `lgpio` GPIO backend has no prebuilt wheel for this OS/arch and fails to compile/link without them). Documented in `requirements.txt`'s header comment.
+- [x] Deployed `RPi_companion/` to `~/RPi_companion` on the Pi.
+- [x] `python3 test_imu.py` with nothing attached — confirmed it fails cleanly (`No I2C device at address: 0x28`, exit 1, no hang/crash) rather than silently returning fake data. This is as far as verification can go without the sensor.
+- [ ] Re-run `test_imu.py` once the BNO055 is physically reconnected — confirm heading/roll/pitch update sensibly as the board is moved, `valid=OK`.
+- [ ] `python3 calibrate_imu.py` — run the still/6-orientation/figure-8 ritual, get all four calibration values to 3, record the printed offsets in scratchpad.md and paste into `imu.py`.
+
+**Not reused from the old BBB rig:** the saved `bno055_calibration.json` offsets (`accel[0,0,0]`, `gyro[-2,0,1]`, `mag[111,-187,-126]`) — those are specific to that sensor's old physical mounting and magnetic environment, not this one. Fresh calibration required.
+
+### 3.7 Firmware File Reference (Phase 5)
+
+| File | Purpose |
+|---|---|
+| `Core/Inc/rpi_link.h`, `Core/Src/rpi_link.c` | USART2 DMA+IDLE framing, command parse, feedback send — mirrors `ibus.c`'s role for USART1 |
+| `Core/Inc/ibus.h`, `Core/Src/ibus.c` | Modified: `SWB` now decodes to `IBUSData_t.auto_mode` via `_SwbToAuto()`; `rev_speed_pct` fixed at `1.0f` |
+| `Core/Inc/config.h` | Modified: SWB section rewritten, `SWB_SPEED_LOW/HIGH` removed, new RPi link protocol/timeout constants added |
+| `Core/Inc/ackermann_config.h` | Modified: added `AUTO_SPEED_DEADBAND_MS` |
+| `Core/Inc/ackermann.h`, `Core/Src/ackermann.c` | Modified: added `Ackermann_RunAuto()` |
+| `Core/Src/main.c` | Modified: reads `RPiCmd_t` each tick, branches on `rc.auto_mode`, sends feedback frame every tick; also had missing includes restored (see scratchpad.md) |
+| `Core/Src/stm32f4xx_it.c` | Modified: `USART2_IRQHandler` now calls `RPiLink_IdleCallback()` on the IDLE flag |
+| `Rover.ioc` | Modified: `USART2` peripheral (PA2/PA3), `DMA1_Stream5` RX request, associated NVIC entries |
+
+**Status: RESOLVED — link fully verified working end-to-end.** Rover on a jack for bench testing; `check_stm32_link.py` shows a steady 20.0 frames/s with zero checksum failures, `read_encoders.py` shows live, sane angle/RPM data. See §3.8 for the root cause and the debugging trail that found it.
+
+### 3.8 UART Link Debugging Session — RESOLVED
+
+**Symptom:** first end-to-end test (`RPi_companion/check_stm32_link.py`) found zero bytes arriving at the RPi, confirmed at the raw-byte level (bypassing all app parsing).
+
+**Ruled out along the way, by code audit + physical checks** (STM32 firmware code, `check_stm32_link.py`'s own logic, a stale `.elf`, GPIO pin conflicts, a boot-time `Error_Handler()` hang, and unbounded I2C calls in the boot path) — none of these were the cause. `ESP32_uart_sniffer/` (a read-only tap directly on STM32 `PA2`, isolated from the RPi entirely) confirmed the STM32 **was** transmitting correctly the whole time, and the user independently re-confirmed the physical wiring was correct — which narrowed the fault to the RPi's own OS/config, exactly as the user suspected.
+
+**Root cause — two stacked problems on the RPi side:**
+1. **Bluetooth was silently claiming the UART.** `dmesg` showed `hci_uart_bcm serial0-0: ...` — the Pi 5's onboard Bluetooth shares the same physical UART as GPIO14/15. Freeing the login console (§3.6's original setup) wasn't sufficient; Bluetooth's own boot-time attach process re-claimed the port independently, leaving it at 9600 baud with the HCI line discipline attached instead of a plain raw serial port. Fixed with `dtoverlay=disable-bt` in `/boot/firmware/config.txt` — **this permanently disables Bluetooth on this Pi**, an accepted trade-off since BT isn't used anywhere in this project.
+2. **The real root cause: `enable_uart=1` was never set.** Even after fixing Bluetooth, zero bytes persisted. `pinctrl get 14,15` (RP1's pin-mux inspection tool) revealed `GPIO14 = none`, `GPIO15 = none` — the physical pins were never switched into UART alternate-function mode at the hardware level, despite `/dev/ttyAMA10` existing as a kernel device node and a `serial-getty` unit having appeared to run on it previously. **A device node existing, or even a getty being "active," does not prove the GPIO pins are actually muxed to the peripheral** — that assumption is what cost the most debugging time. Fixed by explicitly adding `enable_uart=1` to `config.txt`; confirmed after reboot via `pinctrl get 14,15` → `GPIO14 = TXD0`, `GPIO15 = RXD0`.
+
+**Verification after both fixes:** raw `cat /dev/serial0` (with baud explicitly forced to 115200 via `stty`, since `cat` doesn't set it itself) showed clean, correctly-checksummed feedback frames. `check_stm32_link.py` then confirmed the full application-layer path: steady 20.0 frames/s, zero bad frames, `ARMED=Y RC_OK=Y`. `read_encoders.py` confirmed live sane data (`rpm_L`/`rpm_R` = 0.00, correct with the rover on a jack; `angle_L≈+39°` with normal jitter).
+
+**One new observation, not yet investigated:** `angle_R` reads a rock-steady `-45.00°` with zero jitter, unlike `angle_L` which shows normal small ADC noise. Either the right wheel is genuinely sitting at full lock, or that channel is saturating/clamping. Not urgent (`STEER_FAULT` reports healthy) but worth checking against the physical wheel position next time someone's at the rover.
+
+**Lesson for future RPi UART/GPIO work:** verify pin mux directly with `pinctrl get <pin>` before trusting a device node's existence or a systemd unit's "active" status as proof the hardware is actually configured — this applies to any future GPIO-peripheral wiring on this Pi, not just this UART.
+
+---
+
+## 4. Work Breakdown Structure & Phase Status
+
+### Phase 1: Architecture, Review & Planning — [COMPLETED]
+- [x] Analyzed `STM_ackermann_backup` modules.
+- [x] Verified and documented 7 corrections + 1 design improvement (Kinematic `tanf`, PID derivative-on-measurement, ADC debounce, compile headers, reverse scaling).
+- [x] Initialized dedicated tracking in `architecture.md`, `scratchpad.md`, and `works.md`.
+
+### Phase 2: Module Code Integration into `Rover_closed_loop/` — [COMPLETED]
+- [x] Added `ackermann_config.h`, `ads1115.h/.c`, `actuator.h/.c`, `steer_pid.h/.c`, `ackermann.h/.c` into `Rover_closed_loop/Core/`.
+- [x] Applied verified bug fixes (kinematic `tanf`, PID derivative-on-measurement, ADC debounce hold, reverse scaling, `#include "config.h"`).
+- [x] Updated `Rover_closed_loop/Core/Src/main.c` control loop and telemetry.
+- [x] Verified `Rover_closed_loop/STM32F411CEUX_FLASH.ld` linker script is clean for GCC 10.
+
+### Phase 3: Building & Firmware Verification — [COMPLETED]
+- [x] Clean and build `Rover_closed_loop` project in STM32CubeIDE (0 errors, 0 warnings) — fixed 4 constants dropped during the Phase 2 port (`ACK_STRAIGHT_DEG`, `STEER_INTEGRAL_MAX_PCT`, `KP/KI/KD_STEER`; see scratchpad.md).
+- [x] Flashed firmware.
+
+### Phase 4: Step-by-Step Hardware Bring-Up & Calibration
+- [x] **Step 1:** ADC feedback verification — done off-board via standalone ESP32 + ADS1115 rig (gain/wiring matched to STM32 firmware); both channels confirmed monotonic and consistent in sign (see scratchpad.md).
+- [x] **Step 2:** Potentiometer min/max calibration (`ADC_*_MIN/MAX_RAW`) — applied: L 6813–15766, R 6059–14279. ⚠️ True mechanical lock angle not yet verified against `MAX_STEER_ANGLE_DEG` (45°) with a protractor.
+- [ ] **Step 3:** Actuator polarity & deadband verification — in progress. Actuator confirmed hunting/oscillating at zero on hardware with ±1.3° deadband; widened to ±2.5° (see scratchpad.md). Steering angle calibration replaced twice: first a flat per-wheel zero trim (fixed the zero-offset but broke left pivot, see scratchpad.md Mistake 9), now a proper 3-point (min/center/max) piecewise-linear calibration per wheel — analytically verified (straight=0°/0°, both locks=±45°/±45°). Also found + fixed a persistent left-drift-on-straight bug caused by `ACK_STRAIGHT_DEG` (1.0°) being narrower than `STEER_DEADBAND_DEG` (2.5°), raised to 3.0° (Mistake 10). **None of the above re-tested on hardware after flashing yet.**
+- [ ] **Step 4:** Steering PID tuning (`Kp`, `Ki`, `Kd`).
+- [ ] **Step 5:** Rear differential test with wheels on blocks.
+- [ ] **Step 6:** Ground testing in field conditions.
+
+### Phase 5: Autonomous Integration via Raspberry Pi — [PLANNING]
+- [x] Reviewed old BBB autonomous stack (`Old_files/UGV_closed/`) for reusable guidance/localization logic vs. hardware-access code that must be replaced.
+- [x] Decided division of responsibility: RPi = guidance/sensing brain, STM32 = real-time actuation server (see §3).
+- [x] Decided mode arbitration: SWB repurposed from reverse-speed-cap to MANUAL/AUTO select; UART-link-loss in AUTO mode → brake (see §3.3, §3.5).
+- [x] Drafted UART command/feedback frame layout (see §3.4).
+- [x] Configured USART2 (PA2/PA3) in `Rover.ioc` / CubeMX — Asynchronous, RX via DMA1_Stream5 + IDLE interrupt (mirrors the USART1/iBUS pattern), code generated and verified against the §10.3 checklist.
+- [x] Implemented UART command/feedback framing on the STM32 side (`rpi_link.c/h`) + `AUTO_UART_TIMEOUT_US` failsafe + SWB mode-select wiring in `main.c`. See scratchpad.md for the implementation notes and one regeneration-related regression found and fixed along the way.
+- [x] Firmware rebuilt and reflashed to the STM32 with these changes.
+- [ ] **Not yet tested with a live RPi** — nothing has driven the UART link yet from the RPi side.
+- [ ] Port/adapt guidance stack to the RPi (localization, path manager, guidance law) from `Old_files/UGV_closed/`, replacing direct hardware access with the UART client.
+- [ ] Wire IMU + RTK GNSS directly to the RPi (replacing the old BBB↔RPi TCP link for RTK). **In progress:** IMU driver (`RPi_companion/imu.py`) written for the DFRobot Fermion BNO055 on I2C1 — not yet hardware-verified, no RTK work started (see §3.6).
+- [ ] Bench test: RPi sends synthetic steer/speed targets over UART, verify STM32 executes them and reports feedback correctly, with SWD/SWB physically toggled on the transmitter.
+- [ ] Field test: full autonomous waypoint run.

@@ -1,0 +1,1883 @@
+    ================================================================================
+  AGRICULTURE ROVER — STM32 MIGRATION WORK LOG
+  Project   : Agriculture Rover (BeagleBone Black → STM32F411CEU6)
+  Engineer  : Suyash (Robotics Engineer)
+  Platform  : STM32F411CEU6 (Black Pill), STM32CubeIDE / CubeMX / CubeProgrammer
+  Log Start : Session 1 (Previous context)
+  Log End   : Session 3 (Current context, 2026-07-30)
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BACKGROUND / PROBLEM STATEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The Agriculture Rover was originally controlled by a BeagleBone Black (BBB)
+running Debian Linux with Python 3.11. In field conditions (high ambient
+temperatures), the BBB would freeze and become unresponsive, making the rover
+unsafe to operate.
+
+Decision: Replace the BBB with an STM32F411CEU6 (Black Pill) — a Cortex-M4
+microcontroller running at 100 MHz, far more thermally robust, with no OS
+overhead, deterministic real-time behaviour, and low power draw.
+
+This log documents every step taken from initial code understanding through
+hardware bring-up, module implementation, debugging, and first successful
+hardware tests.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 1 — BBB SYSTEM UNDERSTANDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Reviewed all existing BBB source files in /home/suyash/stm/BBB/ to build a
+complete understanding of the rover before writing any STM32 code.
+
+--- Hardware Inventory (BBB side) ---
+
+  Component         | Detail
+  ------------------|----------------------------------------------------------
+  RC Receiver       | FlySky FS-i6X + FS-iA6B, iBUS, UART5 /dev/ttyS5, 115200
+  Motor DAC (L)     | MCP4725, I2C Bus 2, address 0x61, 12-bit (0–4095)
+  Motor DAC (R)     | MCP4725, I2C Bus 2, address 0x60, 12-bit (0–4095)
+  Rev GPIO Left     | P8_7
+  Rev GPIO Right    | P8_9
+  Brake GPIO Left   | P8_8
+  Brake GPIO Right  | P8_10
+  Contactor         | P8_14 (arms/disarms main motor power)
+  IMU               | BNO055, I2C Bus 2 (P9_19 SCL, P9_20 SDA), Euler+9-axis
+  Encoders          | YT06-OP-600B, 600 PPR quadrature, on WHEEL SHAFT (post
+                    | gearbox). Left: P8_35/P8_33, Right: P8_12/P8_11.
+                    | External 4.2 kΩ pull-ups on each phase to 3.3 V.
+  GPS               | u-blox ZED-F9P RTK, /dev/ttyACM0, 115200 baud
+  WiFi              | USB RTL8188FU + Tailscale VPN
+
+--- Drive Parameters ---
+
+  Wheel radius R        = 0.175 m
+  Track width L         = 0.60 m
+  Max linear vel Vmax   = 0.366 m/s
+  Max angular vel Wmax  = 1.22 rad/s
+  Motor max RPM         = 400
+  Gear ratio            = 1:20
+  Wheel max RPM         = 20 (400 / 20)
+
+--- RC Channel Map (FS-i6X) ---
+
+  CH0 (IBUS_CH_X)  : Right stick left/right  — Steering
+  CH1 (IBUS_CH_Y)  : Right stick up/down     — Throttle
+  CH4 (SWC)        : 3-position switch        — Forward speed cap (30/60/100%)
+  CH5 (SWD)        : 2-position switch        — Arm / Disarm contactor
+  CH6 (SWB)        : 2-position switch        — Reverse speed cap (60/100%)
+
+--- BBB Software Architecture ---
+
+  main.py                          — 20 Hz control loop
+  pipeline.py                      — RC → motion state → wheel RPMs
+  config.py                        — All tunables & pin assignments
+  drivers/flysky_receiver.py       — iBUS frame parser (pyserial)
+  drivers/motor_controller.py      — Open-loop: I2C DAC (smbus2) + GPIO
+  drivers/motor_controller_closed_loop.py — PID closed-loop controller
+  utils/kinematics.py              — Differential drive (V,W) → (rpm_L, rpm_R)
+  Systemd service → startup.sh → main.py
+  UDP telemetry on localhost:5005
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 2 — STM32 PIN & PERIPHERAL PLANNING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Mapped all BBB peripherals to STM32F411CEU6 pins. Key decisions:
+
+--- Pin Assignment ---
+
+  [CORRECTED 2026-07-30 — this table previously did not match the actual
+   generated code (main.h / Rover.ioc). PB3/PB5 were tried briefly for a
+   redundant right-encoder B-phase wiring, then removed in favor of PA1/PA7
+   — the table below was never updated after that. Verified directly
+   against Core/Inc/main.h and Rover.ioc, which are the ground truth.]
+
+  Peripheral       | STM32 Pin  | Mode / Timer
+  -----------------|------------|----------------------------------------------
+  USART1 RX (iBUS) | PA10       | USART1 RX, 115200, DMA2 Stream2 Ch4
+  I2C1 SCL (DAC)   | PB6        | I2C1 (MCP4725 DAC pair)
+  I2C1 SDA (DAC)   | PB7        | I2C1
+  Encoder L A/B    | PA0/PA1    | TIM2 CH1/CH2 — Combined Encoder Mode
+  Encoder R A/B    | PA6/PA7    | TIM3 CH1/CH2 — Combined Encoder Mode
+  Contactor        | PB0        | GPIO Output (optocoupler)
+  Rev Left         | PB1        | GPIO Output
+  Brake Left       | PB10       | GPIO Output
+  Brake Right      | PB12       | GPIO Output
+  Rev Right        | PB13       | GPIO Output
+  TIM5             | (internal) | 32-bit us counter for delays & timestamps
+  TIM4             | (internal) | 20 Hz main loop timer (50 ms period)
+
+--- Encoder Strategy Decision ---
+
+  Considered three approaches:
+    1. Encoder Mode (counting edges) — rejected: at 20 RPM wheel shaft,
+       only ~40 counts per 50 ms loop cycle → too coarse for PID.
+    2. Input Capture — selected: measures period between pulses; gives
+       sub-0.1 RPM resolution regardless of wheel speed.
+    3. Interrupt-based — similar to input capture but simpler.
+
+  Final choice: TIM2/TIM3 in Combined Encoder Mode TI1+TI2 (quadrature),
+  with TIM3 overflow interrupt to handle slow/stopped detection. RPM
+  computed from edge period measured against TIM5 microsecond counter.
+
+  Encoder filter set to value 9 in CubeMX to debounce 4.2 kΩ pull-up
+  encoder signals (removes switch bounce / EMI spikes in agricultural env).
+  External pull-ups confirmed: 4.2 kΩ on each phase to 3.3 V (user-provided).
+
+--- I2C Configuration ---
+
+  I2C1 for MCP4725 DACs (PB6/PB7).
+  Pull-up resistors on PCB: 4.7 kΩ to 3.3 V.
+  Initial setting: 400 kHz (Fast Mode).
+  LATER CHANGED to 100 kHz — see Section 5 for reason.
+
+--- CubeMX Settings Applied by User ---
+
+  TIM2, TIM3 : Encoder Mode, TI1 Input Filter = 9
+  TIM5       : Internal Clock, 32-bit counter, prescaler = 99 → 1 MHz (1 µs)
+  TIM4       : Internal Clock, prescaler gives 20 Hz period
+  USART1     : 115200 baud, 8N1, DMA RX enabled (added later)
+  I2C1       : Standard mode 100 kHz (corrected from 400 kHz)
+  GPIO       : Contactor, Rev L/R, Brake L/R as Push-Pull Output
+  DMA2       : Stream 2, Channel 4 — USART1 RX (added in second pass)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 3 — STM32 MODULE IMPLEMENTATION (All Modules Written)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+All source and header files created under /home/suyash/stm/Rover/Core/:
+
+--- 3.1  config.h  (Core/Inc/config.h) ---
+
+  Central configuration header — mirrors BBB config.py in C #defines.
+  Contains: geometry, motor/gearbox params, encoder constants, control
+  tuning (DEADBAND, EPSILON, MIN_RATIO, SPOT_RPM), timing constants,
+  DAC addresses (0x60 / 0x61), iBUS protocol constants, channel map,
+  switch thresholds (SWC/SWD/SWB), and motor direction multipliers.
+
+  Key constants:
+    DAC_LEFT_ADDR   0x61
+    DAC_RIGHT_ADDR  0x60
+    DAC_MAX         4095
+    IBUS_FRAME_LEN  32
+    IBUS_CH_X       0
+    IBUS_CH_Y       1
+    IBUS_CH_SWC     4
+    IBUS_CH_SWD     5
+    IBUS_CH_SWB     6
+    RC_TIMEOUT_US   400000  (400 ms no-frame → RC lost)
+    LOOP_HZ         20
+    LOOP_PERIOD_US  50000
+
+--- 3.2  motor.c / motor.h  (Core/Src/motor.c, Core/Inc/motor.h) ---
+
+  Replaces BBB motor_controller.py + smbus2 + Adafruit_BBIO.
+
+  Functions implemented:
+    Motor_Init()          — Set all GPIOs low, DAC to zero, clear state
+    Motor_Energize()      — Pull Contactor GPIO high, 500 ms settle delay
+    Motor_Deenergize()    — Zero DACs, pull Contactor GPIO low
+    Motor_SetSpeeds()     — Direction change detection, GPIO toggling,
+                            brake release, DAC write with 20 ms sequence delay
+    Motor_Brake()         — Zero DACs, assert brake GPIOs
+    Motor_Stop()          — Zero DACs, release brake GPIOs (coast)
+    Motor_BrakeThenReverse() — 500 ms brake → call SetSpeeds for reverse
+    Motor_IsArmed()       — Returns armed state
+    Motor_WasReversing()  — Returns reversal state flag
+
+  _WriteDac() — Private I2C helper:
+    Sends MCP4725 "Write DAC Register" command (3 bytes):
+      buf[0] = 0x40  (command byte, no EEPROM write)
+      buf[1] = D[11:4]
+      buf[2] = D[3:0] << 4
+    Using HAL_I2C_Master_Transmit, addr << 1 (7-bit shift), 50 ms timeout.
+
+  _DelayUs() — Busy-wait using TIM5 CNT register (1 µs resolution).
+
+--- 3.3  encoder.c / encoder.h  (Core/Src/encoder.c, Core/Inc/encoder.h) ---
+
+  Replaces BBB eQEP counter reading.
+
+  Method: Period-based RPM measurement using TIM2 (left) and TIM3 (right)
+  in Encoder Mode for direction, with edge timestamps from TIM5 for RPM.
+  TIM3 overflow callback (Encoder_TIM3_OvfCallback) handles stopped detection.
+
+  Functions:
+    Encoder_Init()              — Reset state, start TIM2/TIM3 encoders
+    Encoder_GetRPM_Left()       — Return latest left wheel RPM (signed)
+    Encoder_GetRPM_Right()      — Return latest right wheel RPM (signed)
+    Encoder_TIM3_OvfCallback()  — Called from TIM3 IRQ to detect motor stop
+
+--- 3.4  ibus.c / ibus.h  (Core/Src/ibus.c, Core/Inc/ibus.h) ---
+
+  Replaces BBB flysky_receiver.py + pyserial.
+
+  Protocol: 32-byte iBUS frames at 115200 baud.
+  Header: [0x20, 0x40]. 10 channels × 2 bytes (little-endian). 2-byte checksum.
+  Checksum: 0xFFFF − sum of first 30 bytes.
+
+  Implementation uses DMA + UART IDLE interrupt:
+    - HAL_UART_Receive_DMA() fills dma_buf[32] in background
+    - UART IDLE interrupt fires when frame gap detected
+    - IBUS_IdleCallback() stops DMA, parses frame, restarts DMA
+
+  Functions:
+    IBUS_Init()               — Enable IDLE IT, start DMA receive
+    IBUS_IdleCallback()       — Parse frame on idle line detection
+    IBUS_GetChannels()        — Return latest channel array (IRQ-safe copy)
+    IBUS_IsSignalOk()         — Returns 1 if frame received within 400 ms
+    IBUS_GetXn()              — Normalised steering (-1.0 to +1.0)
+    IBUS_GetYn()              — Normalised throttle (-1.0 to +1.0)
+    IBUS_GetFwdSpeedLimit()   — SWC mapped to 0.30/0.60/1.00
+    IBUS_GetRevSpeedLimit()   — SWB mapped to 0.60/1.00
+    IBUS_IsSWD_On()           — SWD arm/disarm toggle (threshold 1450)
+
+--- 3.5  pipeline.c / pipeline.h  (Core/Src/pipeline.c, Core/Inc/pipeline.h) ---
+
+  Replaces BBB pipeline.py.
+  Implements differential drive mixer:
+    (Xn, Yn) → motion state → (rpm_L, rpm_R, dac_L, dac_R)
+  States: FORWARD, REVERSE, SPOT_TURN, BRAKE, STOP
+  Applies SWC/SWB speed caps, EPSILON steering curve, MIN_RATIO inner wheel.
+
+--- 3.6  main.c control loop  (Core/Src/main.c) ---
+
+  20 Hz loop driven by TIM4 period interrupt.
+  Loop body:
+    1. Read IBUS channels
+    2. Check SWD → arm/disarm contactor (with debounce)
+    3. If armed & signal OK → run pipeline → Motor_SetSpeeds / Motor_Brake
+    4. If RC lost → Motor_Brake (failsafe)
+    5. Read encoders (for future PID / telemetry)
+
+  Initialisation sequence (USER CODE BEGIN 2):
+    Motor_Init()
+    Encoder_Init()
+    IBUS_Init()
+    Motor_Energize()              ← auto-arm on boot
+    last_contactor_ts = TIM5->CNT
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 4 — BUILD, FLASH, AND FIRST POWER-ON
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+--- 4.1  Build Errors (11 Errors — All Fixed) ---
+
+  ERROR 1-3: 'Contractor_GPIO_Port' undeclared (3 locations in motor.c)
+    Root cause: CubeMX generated the GPIO label as "Contactor_" but our
+                code used "Contractor_" (typo — letters transposed).
+    Fix: Renamed all 3 occurrences in motor.c:
+           Motor_Init()      → Contactor_GPIO_Port / Contactor_Pin
+           Motor_Energize()  → Contactor_GPIO_Port / Contactor_Pin
+           Motor_Deenergize()→ Contactor_GPIO_Port / Contactor_Pin
+
+  ERROR 4: 'huart1' undeclared in stm32f4xx_it.c
+    Root cause: Missing extern declaration in interrupt file.
+    Fix: Added in External Variables section of stm32f4xx_it.c:
+           extern UART_HandleTypeDef huart1;
+
+  ERROR 5: 'htim3' undeclared in stm32f4xx_it.c
+    Root cause: Same — missing extern.
+    Fix: Added extern TIM_HandleTypeDef htim3; in stm32f4xx_it.c.
+
+  (Remaining errors were cascading from the above root causes.)
+
+  Result: Clean build — 0 errors, 0 warnings after fixes.
+
+--- 4.2  Flashing ---
+
+  User connected ST-Link V2 debugger to Black Pill SWD pins.
+  Flashed via STM32CubeProgrammer / ST-Link interface.
+  (Note: USB-C on Black Pill requires BOOT0 held HIGH while powering —
+   only needed for DFU/USB bootloader, not required when using ST-Link.)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 5 — HARDWARE DEBUGGING (3 Issues Resolved)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BUG #1 — Contactor Not Clicking on Boot
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Symptom: After first flash, contactor did not click. On BBB, the contactor
+           clicked automatically on boot (confirming system ready). On STM32
+           the only contactor trigger was the SWD rising-edge detection.
+
+  Root cause: Original STM32 code only energised on SWD toggle (rising edge
+              detect). No auto-energise on startup.
+
+  Fix: Added Motor_Energize() call in USER CODE BEGIN 2 of main.c,
+       immediately after Motor_Init() / IBUS_Init():
+
+         Motor_Energize();
+         last_contactor_ts = TIM5->CNT;  // start debounce from this moment
+
+  Result: Contactor clicks ~500 ms after boot — same behaviour as BBB.
+          Confirmed working by user.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BUG #2 — iBUS Not Receiving (FlySky RC Unresponsive)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Symptom: Contactor clicked (boot confirmed), FlySky bound to receiver,
+           but no stick movement / switch commands had any effect.
+
+  --- Sub-bug A: NVIC not enabled for USART1 ---
+
+    Root cause: CubeMX does not automatically add NVIC enable calls in
+                HAL_UART_MspInit() unless "NVIC" is explicitly configured
+                in the CubeMX NVIC panel. It was not set.
+                Result: USART1 interrupts never fired.
+
+    Fix: Manually added to stm32f4xx_hal_msp.c in USER CODE section
+         inside HAL_UART_MspInit():
+
+           HAL_NVIC_SetPriority(USART1_IRQn, 5, 0);
+           HAL_NVIC_EnableIRQ(USART1_IRQn);
+
+  --- Sub-bug B: DMA not configured — HAL_UART_Receive_DMA() silently failed ---
+
+    Root cause: ibus.c called HAL_UART_Receive_DMA() but DMA2 Stream 2
+                was never enabled in CubeMX. The huart1.hdmarx pointer was
+                NULL. The call returned HAL_ERROR silently — no assertion,
+                no crash — just no data ever arrived in the buffer.
+
+    Fix: User added DMA to CubeMX configuration:
+           DMA2, Stream 2, Channel 4, Direction = Peripheral→Memory,
+           Mode = Normal, Data Width = Byte/Byte.
+         CubeMX regenerated MX_DMA_Init() and added it BEFORE MX_I2C1_Init()
+         in main.c (correct order — DMA must init before peripherals that use it).
+
+  --- Sub-bug C: Duplicate USART1_IRQHandler after CubeMX regeneration ---
+
+    Root cause: After CubeMX regenerated stm32f4xx_it.c, it added its own
+                USART1_IRQHandler(). Our previous USER CODE still had a
+                duplicate handler inside USER CODE BEGIN 1. Two handlers
+                for same IRQ = linker error / undefined behaviour.
+
+    Fix: Removed our duplicate handler from USER CODE BEGIN 1.
+         Moved IDLE detection into the CubeMX-generated handler using
+         USER CODE sections:
+
+           /* In USART1_IRQHandler, USER CODE BEGIN USART1_IRQn 0: */
+           if (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_IDLE))
+               IBUS_IdleCallback();
+
+  --- Sub-bug D: IDLE flag clearing (STM32F4 specific) ---
+
+    On STM32F4, IDLE flag is cleared by reading SR then DR (not by a
+    simple macro). The correct macro is __HAL_UART_CLEAR_IDLEFLAG()
+    which performs the SR→DR read sequence.
+    Confirmed this was used correctly in IBUS_IdleCallback().
+
+  --- Physical Connection Note ---
+
+    iBUS receiver signal line runs at 5 V logic level.
+    BBB was protected by a voltage divider (5V → 3.3V) on the PCB.
+    STM32 PA10 is 5V-tolerant on STM32F4, so the same PCB voltage divider
+    is compatible. User confirmed physical connection using jumper wires
+    from PCB's P9_19 and P9_20 pads to STM32 PB6 and PB7.
+
+  Result: After all four sub-bugs fixed, iBUS reception working.
+          SWD arm/disarm confirmed working (contactor clicks).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BUG #3 — Motor Throttle Not Responding (Stick Movement No Effect)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Symptom: iBUS working (SWD contactor toggle confirmed), but moving throttle
+           / steering sticks caused no voltage change on DAC output pins.
+           Multimeter on MCP4725 Vout: stuck at 0 V regardless of stick pos.
+           I2C SDA (PB7) and SCL (PB6): both read 3.2 V (pull-ups working).
+
+  --- Sub-bug A: Missing MCP4725 command byte ---
+
+    Root cause: Original _WriteDac() sent only 2 bytes (upper nibble, lower
+                nibble). The MCP4725 requires a 3-byte transaction:
+                  Byte 0: 0x40 (Write DAC Register, no EEPROM)
+                  Byte 1: D[11:4]
+                  Byte 2: D[3:0] << 4
+                Without the command byte, the chip interpreted the data bytes
+                as a command (0x00 = fast write to DAC+EEPROM with value 0),
+                so it output 0 V consistently regardless of what we sent.
+
+    Reference: BBB used Python smbus2:
+                 write_i2c_block_data(addr, 0x40, [upper, lower])
+               Which sends exactly 3 bytes: command=0x40, then 2 data bytes.
+
+    Fix: Rewrote _WriteDac() in motor.c:
+
+           static void _WriteDac(uint8_t addr, uint16_t value)
+           {
+               if (value > DAC_MAX) value = DAC_MAX;
+               uint8_t buf[3];
+               buf[0] = 0x40U;
+               buf[1] = (uint8_t)((value >> 4) & 0xFFU);
+               buf[2] = (uint8_t)((value << 4) & 0xFFU);
+               HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(addr << 1),
+                                       buf, 3U, 50U);
+           }
+
+  --- Sub-bug B: I2C speed incompatible with 4.7 kΩ pull-up resistors ---
+
+    Root cause: I2C1 was configured at 400 kHz (Fast Mode).
+                Fast Mode requires signal rise time ≤ 300 ns.
+                PCB pull-up resistors: 4.7 kΩ to 3.3 V.
+                Bus capacitance: ~100 pF (typical PCB trace + chip input).
+                Rise time = 0.8473 × R × C ≈ 0.8473 × 4700 × 100e-12 ≈ 398 ns
+                            (or simple RC: τ = 470 ns → 63% in 470 ns)
+                This exceeds the 300 ns limit → I2C framing errors → no ACK.
+
+    Fix: Changed I2C1 clock from 400 kHz to 100 kHz (Standard Mode).
+         At 100 kHz, rise time limit is 1000 ns — well within 470 ns actual.
+         Changed in main.c MX_I2C1_Init():
+
+           hi2c1.Init.ClockSpeed = 100000;
+
+         Also increased _WriteDac() HAL timeout from 10 ms to 50 ms.
+
+    IMPORTANT NOTE: If CubeMX is ever used to regenerate code, the I2C1
+                    must be set to "Standard Mode 100 kHz" in CubeMX,
+                    otherwise regeneration will overwrite this back to 400 kHz.
+
+  Status: Fix applied (100 kHz I2C + correct 3-byte DAC command).
+          Rebuild and flash pending at end of Session 2.
+          Expected result: multimeter on DAC Vout should now show voltage
+          changing (0 V → ~3.3 V range) as throttle stick is moved.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BUG #4 — Reverse Does Nothing (Stays Forward); Left Steering Does Nothing
+  (Stays Right) — Found and Fixed 2026-07-30
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Symptom: Forward throttle and right steering worked correctly. Reverse
+           throttle had no effect (motors kept driving forward). Left
+           steering had no effect (rover kept turning right regardless of
+           stick position).
+
+  Root cause: Core/Src/ibus.c, _ToFloat(). IBUS_VAL_MIN/MID/MAX are #define'd
+              in config.h with a U suffix (unsigned int). The line
+
+                norm = (float)(raw - IBUS_VAL_MID) / ...
+
+              forces `raw - IBUS_VAL_MID` into UNSIGNED arithmetic whenever
+              raw < IBUS_VAL_MID (i.e. any stick position below center —
+              reverse throttle or left steering). Example: raw=1000,
+              IBUS_VAL_MID=1500 → 1000u - 1500u does not give -500, it wraps
+              to 4294966796u. Cast to float, that's ~+8.59 million instead
+              of -1.0.
+
+              Downstream, this huge positive garbage value:
+                - As Yn: going_fwd = (Yn > 0.0f) evaluates true regardless
+                  of intent → robot always computed as driving forward.
+                - As Xn: the steering formula treats it as a large positive
+                  (right-side) command → robot always steered as if turning
+                  right.
+
+              Values with raw >= IBUS_VAL_MID (forward throttle, right
+              steering) never hit the wraparound, which is why those
+              directions worked and the negative side silently didn't.
+
+              This bug has no equivalent in the original BBB Python
+              (drivers/flysky_receiver.py `_to_float`) — Python integers
+              are arbitrary-precision and signed, so `raw - IBUS_MID` just
+              works. It was introduced purely by the C port picking up the
+              `U` suffix on the config constants.
+
+  Fix: Cast to a signed type before subtracting, in Core/Src/ibus.c:
+
+         int32_t diff = (int32_t)raw - (int32_t)IBUS_VAL_MID;
+         norm = (float)diff / (float)(IBUS_VAL_MID - IBUS_VAL_MIN);   /* or MAX-MID */
+
+       Scanned the rest of Core/Src for the same "(unsigned constant) -
+       (unsigned constant)" pattern — no other occurrence found.
+
+  Status: Fixed in source. Rebuilt and flashed 2026-07-30 along with Bug #5
+          below (both found in the same test session).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BUG #5 — Total Freeze After Rebuild (Only Boot-Time Contactor Click Works,
+  Nothing Else Responds) — Found and Fixed 2026-07-30
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Symptom: After rebuilding/flashing the Bug #4 fix (which also carried the
+           earlier TIM3-NVIC change from the same session), the contactor
+           still clicked once at boot, but nothing else worked at all — no
+           forward, no reverse, no left, no right, and (implicitly) no live
+           SWD arm/disarm either. This is a regression introduced by THIS
+           session's own earlier TIM3 NVIC fix, not by Bug #4.
+
+  Root cause: HAL_TIM_Encoder_Start_IT(&htim3, TIM_CHANNEL_ALL) — called
+              from Encoder_Init() — does NOT enable TIM3's Update interrupt.
+              Checked the HAL source directly
+              (Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim.c,
+              HAL_TIM_Encoder_Start_IT, TIM_CHANNEL_ALL branch): it enables
+              TIM_IT_CC1 and TIM_IT_CC2 — the capture-compare interrupts
+              that fire on every quadrature edge — not TIM_IT_UPDATE.
+
+              TIM3_IRQHandler (added earlier this session) only checked and
+              cleared the UPDATE flag:
+
+                if (__HAL_TIM_GET_FLAG(&htim3, TIM_FLAG_UPDATE) && ...)
+                    __HAL_TIM_CLEAR_IT(&htim3, TIM_IT_UPDATE);
+
+              So the first time the right wheel turned and generated a
+              CC1/CC2 edge: TIM3_IRQn fired (now unmasked at NVIC by this
+              session's earlier fix) → the ISR's UPDATE check was false →
+              the CC1/CC2 flag that caused entry was never cleared → the
+              IRQ re-fired the instant the ISR returned → infinite interrupt
+              storm → main loop starved of CPU forever. The contactor had
+              already clicked (in Motor_Energize(), called before the first
+              wheel ever turns), so it looked "engaged" while everything
+              else silently died the moment the wheels first moved.
+
+              Before this session, TIM3_IRQn was masked at the NVIC, so the
+              CC1/CC2 flags set harmlessly and nothing ever serviced them —
+              which is also why the original 16-bit-overflow problem (the
+              thing the NVIC fix was trying to solve) never caused a crash,
+              just silently-wrong RPM after ~82s of continuous rotation.
+
+  Fix: Removed the interrupt-driven approach entirely and switched TIM3
+       overflow tracking to polling, since Encoder_Update() already runs
+       every 20 Hz tick and a 16-bit counter at max wheel speed doesn't
+       wrap for ~82s (huge margin vs. a 50ms poll interval):
+         - encoder.c: Encoder_Init() now calls HAL_TIM_Encoder_Start()
+           (non-IT) for TIM3, same as TIM2.
+         - encoder.c: Encoder_Update() now polls and clears
+           __HAL_TIM_GET_FLAG(&htim3, TIM_FLAG_UPDATE) once per call and
+           invokes the (now-static, internal) overflow handler directly —
+           no ISR involved.
+         - stm32f4xx_it.c: removed the TIM3_IRQHandler USER CODE block
+           entirely (left a comment explaining why, to stop this from being
+           reintroduced the same way). TIM3's vector now falls through to
+           the default weak handler, which is correct since NVIC is masked.
+         - stm32f4xx_hal_msp.c: removed the TIM3_IRQn NVIC enable from
+           HAL_TIM_Encoder_MspInit() (left a comment pointing at the polling
+           approach instead).
+         - encoder.h: removed Encoder_TIM3_OvfCallback() from the public
+           API — it's internal-only now (renamed _TIM3_OvfHandler, static).
+
+  Lesson: HAL_TIM_Encoder_Start_IT() enables CC1/CC2 (edge) interrupts, NOT
+          the Update interrupt, regardless of channel argument. If you need
+          Update/overflow interrupts alongside encoder mode, either handle
+          CC1/CC2 in the ISR too (e.g. by calling HAL_TIM_IRQHandler(), which
+          services all three), or don't use interrupts for the overflow
+          case at all — poll it from wherever you already read the counter
+          on a fixed schedule, as done here.
+
+  Status: Fixed and CONFIRMED — rebuilt/flashed 2026-07-30, freeze is gone
+          (main loop alive: SWD-driven contactor and brake-release both
+          respond to commands correctly now). Still need the >90s
+          continuous-rotation soak test to be fully confident no
+          encoder-related freeze remains.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  OPEN INVESTIGATION — No Wheel Movement At All, Despite Brake Releasing
+  Correctly (Opened 2026-07-30, root cause not yet confirmed)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Symptom: After the Bug #5 fix, tested again: brake GPIOs release correctly
+           on command (confirmed with multimeter — main loop and motor
+           state machine are alive and reaching Motor_SetSpeeds() /
+           Motor_BrakeThenReverse()), but no forward/reverse/left/right
+           motion happens at all.
+
+  Checked and ruled out:
+    - I2C1 clock speed: confirmed 100 kHz Standard Mode in BOTH Rover.ioc
+      (I2C1.I2C_Mode=I2C_Standard) and the generated main.c
+      (hi2c1.Init.ClockSpeed = 100000) — this was NOT reverted to 400 kHz.
+    - Re-read ibus.c, pipeline.c, kinematics.c, motor.c, main.c end-to-end
+      against the intended logic — no further sign/logic bugs found; the
+      code path from RC input to _WriteDac() call looks correct.
+    - Note: the original Bug #3 fix (3-byte DAC command + 100kHz I2C) was
+      applied in Session 2 but NEVER actually verified on hardware before
+      now — testing was blocked first by Bug #4, then Bug #5. This may be
+      the first real hardware test of that fix, so it's possible the DAC
+      path has an issue that predates this session entirely (wiring, DAC
+      power, address strapping, level shifter) rather than being a new
+      regression.
+
+  Gap found: motor.c _WriteDac() discarded HAL_I2C_Master_Transmit()'s
+             return status entirely. If the DAC isn't ACKing (bad wiring,
+             no power to the MCP4725, wrong address), the firmware has no
+             way to detect or report it — it just silently keeps outputting
+             0V forever, which matches the symptom.
+
+  Added (not a fix — a diagnostic): PC13 (onboard LED on this Black Pill,
+  active-LOW, confirmed unused elsewhere in the project) now latches ON the
+  first time either DAC's I2C write fails to complete, and stays on until
+  the next Motor_Init(). Core/Src/motor.c: _DiagLedInit() (called from
+  Motor_Init()) and _DiagLedLatchFail() (called from _WriteDac() on
+  non-HAL_OK status).
+
+  Next steps (needs the physical hardware in front of the user):
+    [ ] Rebuild/flash, command movement, check whether the onboard LED
+        lights up:
+          - LED ON  → I2C write to a DAC is failing at the hardware level.
+            Check: DAC power supply, SDA/SCL wiring continuity to PB6/PB7,
+            MCP4725 address-select pin strapping (0x60 vs 0x61), and
+            confirm both DACs are actually present with a simple
+            HAL_I2C_IsDeviceReady() bus scan if the LED points this way.
+          - LED OFF → I2C writes are succeeding (DAC is ACKing), so the
+            problem is downstream of the DAC — check DAC Vout directly
+            with a multimeter while commanding motion (should move between
+            ~0V and ~3.3V), then check the level-shifter board and motor
+            controller throttle input if Vout does change but the wheels
+            still don't move.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ROLLBACK — 2026-07-30, same day as Bug #5 / Open Investigation above
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  After the Open Investigation entry above (no wheel movement at all despite
+  brake releasing), the user pointed out — correctly — that the previous,
+  unmodified files had ONLY the reverse/left problem (Bug #4) and otherwise
+  drove fine, and that this session's changes made it categorically worse
+  (zero directions working instead of two). The mistake: several speculative
+  fixes (TIM3 NVIC → Bug #5 → polling revert, the RC-safe blocking-delay
+  logic, the diagnostic LED) were bundled into one rebuild/flash/test cycle
+  instead of being tested one at a time. When the combined result regressed,
+  there was no way to isolate which change was responsible.
+
+  Action taken: reverted Core/Src/motor.c, Core/Src/encoder.c,
+  Core/Inc/encoder.h, Core/Src/stm32f4xx_it.c, Core/Src/stm32f4xx_hal_msp.c,
+  and Core/Inc/ibus.h to their exact pre-Session-3 state. The ONE change kept
+  is the Bug #4 fix in ibus.c _ToFloat() (the signed-cast subtraction) —
+  reasoned through carefully, mechanically simple (a pure function, no
+  interrupts/timing/state involved), and independently verifiable by
+  inspection, so it's the one change actually safe to isolate and test.
+
+  This means Bug #5 (TIM3 interrupt storm) and the RC-safe blocking-delay
+  safety net are BACK — i.e. TIM3 Start_IT + masked NVIC is back (harmless,
+  matches the original working baseline), and Motor_SetSpeeds() /
+  Motor_BrakeThenReverse() are back to plain unconditional _DelayUs() with
+  no RC-abort logic. Both write-ups below are kept for the reasoning (the
+  interrupt-storm mechanism and the DAC-error-checking gap are still real
+  and worth revisiting), but neither fix is currently in the code — do not
+  assume they are.
+
+  Going forward: one change per rebuild/flash/test cycle. Confirm each
+  fix in isolation before layering the next one on top.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  EXPERIMENT — No Movement After Cold Power-Up, Works Fine After Manual
+  Reset (Opened 2026-08-??, not yet verified on hardware)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Symptom: After powering the whole system from cold, contactor clicks
+           audibly and SWD-triggered arm/disarm via the transmitter works
+           (both confirmed) — but no forward/reverse/any movement happens.
+           Pressing the STM32's own RESET button (not a full power cycle)
+           immediately fixes it; everything then works normally for the
+           rest of that session.
+
+  Hypothesis: contactor (GPIO) and iBUS/SWD (UART) both work fine on cold
+              boot, and both are entirely independent of I2C — the only
+              thing broken is anything that depends on writing the DAC
+              over I2C. That narrows this specifically to I2C, not a
+              general MCU boot problem.
+
+              The STM32 itself boots and starts executing within low
+              single-digit milliseconds of power being applied. The rest
+              of the board (DAC supply rail, whatever regulator feeds the
+              MCP4725s) likely has a slower power-up ramp. Motor_Init()
+              runs almost immediately after boot and previously attempted
+              its first _WriteDac() calls before that supply had
+              necessarily stabilised. An I2C transaction attempted against
+              a not-yet-powered (or only-just-powering) slave can leave
+              the bus or the STM32's own I2C1 peripheral state wedged, so
+              every LATER I2C transaction keeps failing too — even once
+              the DAC is fully powered — because the bus/peripheral state
+              is stuck, not because the DAC isn't ready anymore.
+
+              A manual reset re-runs the exact same init sequence, but by
+              the time a human presses the button, the DAC rail has long
+              since stabilised (seconds have passed since cold power-on),
+              so the same sequence that failed at cold boot succeeds
+              cleanly on reset. This matches the reported behaviour
+              exactly (reset fixes it, power-up alone doesn't).
+
+  Fix (single isolated change, per the one-change-at-a-time rule):
+       Core/Src/motor.c — added _WaitForDacsReady(), called at the very
+       start of Motor_Init(), BEFORE the first _WriteDac() calls. Polls
+       HAL_I2C_IsDeviceReady() for both DAC_LEFT_ADDR and DAC_RIGHT_ADDR
+       every 50ms, capped at a hard 2s timeout (falls through and
+       proceeds anyway if the DAC genuinely never responds — no worse
+       than current behaviour in a true hardware-fault case). Confirmed
+       HAL_I2C_IsDeviceReady() itself is internally bounded (uses
+       I2C_WaitOnFlagUntilTimeout for the BUSY flag, returns HAL_BUSY
+       rather than hanging) — verified directly in
+       Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_i2c.c.
+
+       Note: TIM5 is not started until Encoder_Init(), which runs AFTER
+       Motor_Init() in main.c. Since _WaitForDacsReady() needs TIM5 for
+       its own polling delay, it calls HAL_TIM_Base_Start(&htim5) itself
+       first — Encoder_Init() starting it again afterward is harmless
+       (idempotent).
+
+  Caveat / what this does NOT rule out: HAL_I2C_IsDeviceReady() itself
+  issues a real I2C START condition and address probe — it's not a passive
+  check. If the actual failure mode is the DAC ACTIVELY holding SDA low
+  while partially (not fully) powered — rather than simply being absent/
+  unpowered and giving a clean no-ACK — then the very first readiness
+  probe could wedge the bus the same way a raw write would, and this fix
+  wouldn't help. This is considered less likely (a fully unpowered device
+  typically gives a clean timeout, not a wedge — wedging usually needs an
+  actively-driving device that gets interrupted mid-transaction), but
+  isn't proven either way without hardware access. If this fix does NOT
+  resolve the symptom, the next thing to try is an active I2C bus-recovery
+  routine (manually clock SCL as GPIO for up to 9 pulses to unstick a
+  slave before HAL_I2C_Init() runs) — not implemented, only try this if
+  the current fix fails, and still one change at a time.
+
+  Status: TESTED, DID NOT FIX IT. User rebuilt, flashed, power-cycled the
+          whole system from cold several times — cold-boot no-movement
+          issue still present. This confirms the caveat above: waiting for
+          an ACK via HAL_I2C_IsDeviceReady() is not sufficient — the probe
+          itself is a real I2C transaction and can apparently wedge things
+          the same way a raw write would. _WaitForDacsReady() is left in
+          place (harmless, near-zero cost once the bus is actually healthy)
+          but is NOT the fix. See "Forced Software Reset" entry below for
+          the approach used instead.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FIX — Forced Software Self-Reset on Cold Boot (opened same session as
+  above, not yet tested)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Since waiting-and-probing didn't resolve the cold-boot I2C issue, and a
+  manual reset reliably does, the user asked to automate exactly that:
+  wait a few seconds after power-up, then force a reset in software so the
+  full init sequence re-runs once the DAC rail has had time to settle —
+  same effect as pressing the physical reset button, done automatically.
+
+  Danger avoided: a naive "always wait N seconds then reset" would reset
+  in an infinite loop, since triggering NVIC_SystemReset() itself causes
+  another boot that would see the same "wait then reset" code and repeat
+  forever. Fixed by checking RCC->CSR's reset-cause flags, which persist
+  across a reset until explicitly cleared:
+    - RCC_FLAG_PORRST / RCC_FLAG_BORRST → genuine power-on/brown-out reset
+      (a real cold boot) → run the wait-then-reset logic.
+    - RCC_FLAG_SFTRST → the reset was caused by our own NVIC_SystemReset()
+      call → skip the block entirely, proceed straight to normal init.
+    - RCC_FLAG_PINRST (manual reset button) → also skipped, so a user
+      pressing reset later in a session doesn't re-trigger this.
+
+  Implementation — Core/Src/main.c, in the USER CODE Init section, right
+  after HAL_Init() and BEFORE SystemClock_Config() or any peripheral init
+  (so nothing touches I2C/GPIO/etc. during the wait):
+
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_PORRST) || __HAL_RCC_GET_FLAG(RCC_FLAG_BORRST))
+    {
+        __HAL_RCC_CLEAR_RESET_FLAGS();
+        HAL_Delay(3000);
+        NVIC_SystemReset();   /* never returns */
+    }
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+
+  HAL_Delay() works correctly here even though this runs before
+  SystemClock_Config() — HAL_Init() already configured SysTick against
+  whatever clock is active at that point (default post-reset HSI), and
+  SystemClock_Config()'s HAL_RCC_ClockConfig() call re-calibrates SysTick
+  for the new 100MHz clock afterward on the "real" boot — the two don't
+  conflict since they happen in separate boot cycles.
+
+  Known behavioural change: every cold power-up now takes ~3s longer
+  before the contactor click ("system ready" indicator) is heard — click
+  now happens at roughly T+3s+(normal boot time)+500ms settle, not
+  immediately. This is expected; the delay is the whole point. During the
+  3s wait itself nothing is armed and no peripherals besides the default
+  clock are touched, so there's no new safety exposure in that window —
+  the DAC path wasn't working during an equivalent window before this fix
+  either.
+
+  3000ms is the user's empirically-confirmed manual-reset wait; may need
+  tuning (shorter/longer) based on further cold-boot testing.
+
+  Status: TESTED, DID NOT FIX IT. Contactor confirmed clicking ~3s later
+          as expected (proves the delay/reset logic itself ran correctly),
+          but the vehicle still would not move without a manual reset
+          button press. SUPERSEDED — see "FIX — I2C1 Bus-Clear Recovery"
+          below for why (a reset, software or hardware, cannot fix this
+          class of problem) and what replaced it. This code has been
+          REMOVED from main.c, not left in place.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FIX — I2C1 Bus-Clear Recovery on Boot (replaces the forced-reset attempt
+  above; researched via web search per user request)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  User pushed back: contactor now clicks ~3s late as expected (confirming
+  the reset logic itself was running), but movement still required a
+  manual reset press. Asked to research the actual reason.
+
+  Root cause (confirmed via web search, not just internal reasoning this
+  time): a reset — hardware NRST OR software NVIC_SystemReset() — ONLY
+  clears the STM32's own internal peripheral/register state. It has NO
+  effect on an external I2C slave that is actively holding SDA (or SCL)
+  low. If the MCP4725 DAC was mid-transaction when its supply was still
+  ramping up during cold boot, it can freeze holding SDA low, waiting for
+  clock pulses that never arrive. When I2C1 re-initialises after ANY kind
+  of reset, it immediately sees SDA held low and reports BUSY again —
+  identical symptom to what we saw. This is a well-documented, independently
+  confirmed STM32 I2C failure mode:
+    - ST Community: "Can't reset I2C in STM32F407 to release I2C lines"
+      https://community.st.com/t5/stm32-mcus-products/can-t-reset-i2c-in-stm32f407-to-release-i2c-lines/td-p/463531
+      — user found HAL_I2C_DeInit()/re-init and even the SWRST bit did NOT
+      release the lines; the fix that worked was: reconfigure SCL/SDA as
+      GPIO outputs, generate 9 manual clock pulses, THEN reset/reinit I2C.
+    - "Resolving STM32F4xx I2C Stuck Busy After MCU Software Reset"
+      https://www.zyma.me/post/stm32f4-i2c-busy-after-software-reset/
+      — STM32F4-specific, same symptom (stuck BUSY surviving a software
+      reset), same fix: bit-bang ~10 SCL pulses with SDA held high (NACK),
+      then leave SCL high (idle) before re-initialising I2C as a peripheral.
+    - General I2C-bus spec background: the BUSY flag reflects live GPIO
+      bus state, not just internal register state, so an internal reset
+      can't clear it while an external device is still physically driving
+      a line low.
+
+  Fix — Core/Src/main.c:
+    - Added _I2C1_BusRecovery() (USER CODE 0, before main()): configures
+      PB6/PB7 as plain open-drain GPIO (not I2C yet), releases SDA (lets
+      the 4.7k pull-up bring it high), clocks SCL 9 times, then generates
+      a manual STOP condition (SDA low->high while SCL high) to leave the
+      bus cleanly idle. Pure GPIO bit-banging — the I2C1 peripheral isn't
+      touched at all here.
+    - Called from USER CODE BEGIN Init, right after HAL_Init() and BEFORE
+      SystemClock_Config()/MX_GPIO_Init()/MX_I2C1_Init() — critical
+      ordering, since MX_I2C1_Init() (via HAL_I2C_MspInit()) reconfigures
+      PB6/PB7 into I2C alternate-function mode, which would undo the raw
+      GPIO manipulation if this ran afterward.
+    - REMOVED the 3s-delay-then-NVIC_SystemReset() block entirely — it's
+      now confirmed not to be the actual fix, so keeping it would just add
+      needless boot delay for no benefit.
+    - Runs unconditionally on every boot (no RCC_FLAG_PORRST/BORRST check
+      needed this time) — it's fast (well under a millisecond) and
+      harmless on an already-idle bus, since a healthy slave ignores clock
+      edges with no preceding START condition.
+    - _WaitForDacsReady() in motor.c (Motor_Init(), polls
+      HAL_I2C_IsDeviceReady()) is LEFT IN PLACE as a complementary second
+      layer — it addresses a different failure mode (DAC simply not
+      powered up YET, not actively stuck) that bus recovery alone doesn't
+      cover.
+
+  Status: TESTED, DID NOT FIX IT ALONE. User rebuilt/flashed/power-cycled
+          from cold — movement still not working. Bus-clear recovery by
+          itself was insufficient. User also reported reverse now only
+          engages with a slow stick pull, not a sustained hold — same
+          "needs many small attempts, fails on one clean attempt" pattern
+          as before the DAC ramp fix, despite the ramp code being
+          unchanged since it was confirmed working. Working theory: this
+          is the SAME underlying I2C reliability problem, not a ramp
+          regression — an intermittently-bad bus would make many small
+          writes (slow pull) look reliable while a single/few writes (fast
+          push, or a fresh cold-boot write) look broken, without any
+          change to the ramp logic itself.
+
+          User asked to bring the 3s cold-boot delay back (kept scoped to
+          RCC_FLAG_PORRST/BORRST only, per the earlier design — a later
+          manual reset press doesn't also incur it) — this time run
+          BEFORE _I2C1_BusRecovery(), not instead of it, and with no
+          self-reset (confirmed not to help, not worth the extra boot
+          time). Rationale: recovery needs the DAC to be properly powered
+          to respond predictably to the SCL clock-out; if the bus-recovery
+          bit-bang ran while the DAC's own supply was still mid-ramp, it
+          may not have been able to do its job correctly. Giving the rail
+          3s to settle FIRST, then running recovery on a now-stable
+          device, is a reasonable combination of both mechanisms rather
+          than either alone.
+
+          Deliberately did NOT touch motor.c / the ramp logic in this
+          change, per the working theory above — if I2C becomes reliable
+          from this fix, the reverse-hold issue should resolve as a
+          byproduct without any separate change needed. If it's still
+          flaky after this, THAT would be real evidence the ramp logic
+          itself needs attention, separately.
+
+  Status: TESTED, DID NOT FIX IT. Delay + bus-recovery combined still did
+          not restore cold-boot movement. SUPERSEDED — see "FIX — Zero
+          Throttle Confirmed Before Contactor Closes" below, which
+          re-diagnoses the whole problem.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FIX — Zero Throttle Confirmed Before Contactor Closes (re-diagnosis
+  after four failed I2C-focused attempts)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Context: four consecutive fix attempts all failed (DAC-ready polling,
+  forced software self-reset, boot-time bus recovery, delay + recovery
+  combined). All four shared one assumption: that the fault was purely an
+  I2C bus/timing problem. The key evidence that DISPROVES that assumption
+  had been overlooked — the 3s-delay-then-reset attempt produced a
+  correctly-delayed contactor click (so the delay definitely ran, and the
+  DAC rail had a full 3 seconds to stabilise) and STILL no movement. If
+  this were only "DAC not powered up in time," that attempt should have
+  worked. It didn't. So the I2C-timing story is at best incomplete.
+
+  New root-cause hypothesis (fits EVERY observation, including the ones
+  the previous theories could not explain):
+
+    The BLDC controllers latch a refuse-to-run fault at the moment the
+    contactor closes, and only a contactor power-cycle clears it.
+
+    E-scooter BLDC controllers near-universally self-check "is throttle at
+    zero?" at their own power-up, latching a fault if it isn't (standard
+    anti-runaway safety). The contactor is what feeds them power — so the
+    instant the contactor closes IS their power-up moment.
+
+    - COLD BOOT: the MCP4725 powers up outputting whatever is in its
+      internal EEPROM, which is not necessarily 0 V. Motor_Init() attempts
+      to write 0, but if that write fails (bus not yet healthy), the DAC
+      is STILL sitting at that non-zero voltage when Motor_Energize()
+      closes the contactor ~immediately after. Controllers power up, see
+      non-zero throttle, latch fault. From that moment no amount of
+      correct DAC writes will move the wheels — the controllers are done
+      until power-cycled.
+
+    - AFTER PRESSING RESET: the DAC is NOT power-cycled by an STM32 reset
+      — it stays powered and keeps holding the 0 V written during the
+      previous session. Motor_Init() opens the contactor, Motor_Energize()
+      re-closes it, and the controllers power up seeing a clean, genuine
+      0 V → no fault latched → everything works. THIS is why the reset
+      button "fixes" it, and why it looked like an MCU-side problem when
+      it never was.
+
+  This also explains why the immediately-preceding fix failed: that
+  revision called _I2C1_Recover() from Motor_Energize() but placed it
+  AFTER the contactor GPIO was already set high and after the 500 ms
+  settle. The controllers had already latched their fault half a second
+  before the recovery code ever executed. Right idea, fatally wrong place.
+
+  Fix — Core/Src/motor.c:
+    - _WriteDacChecked(): new variant of _WriteDac() that RETURNS the HAL
+      status instead of discarding it (the long-standing gap first noted
+      back in the "Open Investigation" entry, finally acted on).
+      _WriteDac() is kept as a fire-and-forget wrapper for the normal
+      driving path, where a single failed mid-manoeuvre write isn't
+      independently actionable.
+    - _EnsureDacsZeroed(): writes 0 to BOTH DACs and verifies both
+      transactions actually returned HAL_OK. On failure it runs
+      _I2C1_Recover() and retries, up to 5 attempts. On success it waits
+      50 ms for 0 V to settle at the controller input before returning.
+    - Motor_Energize(): now calls _EnsureDacsZeroed() FIRST, and only
+      closes the contactor if it returns success. The post-close
+      _I2C1_Recover() call from the previous revision is removed (it was
+      unreachable-by-design as a fix — see above).
+    - If zero throttle CANNOT be confirmed: the contactor is deliberately
+      NOT closed, and PC13 (onboard LED, active-LOW, confirmed unused) is
+      latched on. Rationale: closing the contactor with an unknown
+      throttle voltage risks both the fault latch AND a genuine unexpected
+      lurch. The rover would not have driven in that state anyway, so
+      refusing costs no capability while removing a real hazard.
+    - _DiagLedInit() called from Motor_Init().
+
+  How to read the result on hardware — this build is self-diagnosing:
+    - Contactor clicks + rover moves      → fixed, hypothesis confirmed.
+    - Contactor clicks + still no movement → the DAC write is SUCCEEDING
+      (I2C is fine!) but the wheels still don't turn. That definitively
+      clears I2C of blame and points at the controllers / level shifter /
+      contactor wiring. Next step would be measuring DAC Vout directly
+      while commanding throttle.
+    - LED lit + NO contactor click        → the firmware could not get a
+      confirmed zero write through even after 5 recovery attempts. That
+      confirms a genuine I2C/DAC hardware-layer fault (wiring, DAC power,
+      address strapping) rather than a timing/ordering problem.
+    Each outcome eliminates a different half of the remaining problem
+    space, so this build produces useful information even if it doesn't
+    fix the symptom.
+
+  Status: TESTED — CAUSED A HARD DEADLOCK, IMMEDIATELY PARTIALLY REVERTED.
+          Outcome was the third case above (LED lit, no contactor click),
+          but it did NOT clear across resets or power cycles: the rover
+          became completely unable to arm, permanently. See "DEADLOCK"
+          entry immediately below.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  DEADLOCK — Gating the Contactor on I2C Success (caused by the fix above;
+  fixed same session)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Symptom after flashing the "prove zero throttle before energising" build:
+  PC13 blue LED solid on, contactor never closes at all, nothing works, and
+  — critically — this did NOT clear after repeated resets and power cycles.
+  Strictly worse than every prior state, since previously a reset always
+  restored full function.
+
+  Root cause: Motor_Energize() had been made to `return` early (refusing to
+  close the contactor) whenever _EnsureDacsZeroed() failed. If the MCP4725
+  DAC board draws its power from a rail that the CONTACTOR ITSELF switches,
+  this is circular and unbreakable:
+
+      contactor stays open  →  DAC has no power
+              →  DAC cannot ACK on I2C
+              →  _EnsureDacsZeroed() fails
+              →  Motor_Energize() refuses to close the contactor
+              →  (repeat forever, reset does not help)
+
+  The DAC's power topology was never actually confirmed — it's listed as
+  unknown in Rover_study.md §9.3 ("Power supply voltages ... unknown"). The
+  symptom (permanent, reset-immune) is strong evidence it IS downstream of
+  the contactor.
+
+  Broader lesson, independent of the power topology: NEVER gate the
+  machine's ability to arm on an I2C transaction succeeding. I2C is the
+  least reliable link in this system and the exact thing under
+  investigation; making arming depend on it converts any I2C fault into a
+  total, unrecoverable brick. Safety interlocks must fail in a direction
+  the operator can recover from.
+
+  Fix — Core/Src/motor.c:
+    - Motor_Energize() closes the contactor UNCONDITIONALLY again. The
+      zeroing attempt is now best-effort: on failure it lights the LED to
+      report, but no longer blocks arming.
+    - Added a SECOND _EnsureDacsZeroed() call AFTER the contactor closes
+      and settles. If the DAC really is powered downstream of the
+      contactor, this is the first instant it can respond — so in that
+      topology this is the call that actually lands. It clears the LED on
+      success (_DiagLedOff() added), so LED state now reports the outcome
+      of the post-contactor attempt.
+    - _EnsureDacsZeroed() retry count cut 5 → 2 and inter-attempt delay
+      100ms → 50ms, since it now runs twice per energize and must not
+      stall arming.
+    - _WaitForDacsReady() timeout cut 2s → 300ms: it runs in Motor_Init()
+      while the contactor is still open, so in the downstream-power
+      topology it can never succeed there and was just adding up to 2
+      seconds of dead time to every single boot.
+
+  Status: TESTED AND CONFIRMED WORKING. Contactor arms normally again and
+          the DACs now work correctly. This build RESOLVED the long-running
+          cold-boot no-movement problem — see the RESOLVED entry below for
+          the full explanation.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+██  RESOLVED — COLD-BOOT "NO MOVEMENT / DAC DEAD" PROBLEM                  ██
+██  Confirmed working on hardware. This is the entry to read first.        ██
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ── THE SYMPTOM ─────────────────────────────────────────────────────────
+
+  After a cold power-up, the contactor clicked and the FlySky RC worked
+  (arm/disarm responded), but the wheels would not move in any direction.
+  Pressing the STM32's physical RESET button made everything work
+  perfectly for the rest of that session. Power cycle → broken again.
+
+  ── THE ACTUAL CAUSE ────────────────────────────────────────────────────
+
+  The firmware was trying to talk to the MCP4725 DACs at a point in the
+  boot sequence when the DACs were not yet able to respond, and those
+  failed transactions left the I2C bus in a wedged state that never
+  recovered on its own — so every later DAC write failed too, and the
+  throttle output stayed at 0 V forever.
+
+  Sequence on a COLD BOOT (broken):
+    1. STM32 powers up and starts executing within milliseconds.
+    2. Motor_Init() immediately fires I2C writes at the DACs to zero the
+       throttle — while the DACs are not yet able to answer.
+    3. Those writes fail. Critically, a failed transaction against a
+       not-yet-ready I2C slave can leave SDA held low / the I2C1
+       peripheral latched in an error state. The bus is now WEDGED.
+    4. The contactor closes. Everything downstream is now powered.
+    5. But the bus is still wedged from step 3 — so every DAC write from
+       the main control loop also fails. DAC output never changes.
+       Throttle stays at 0 V → no movement, forever.
+
+  Sequence after pressing RESET (worked, and this is the clue that cracked
+  it):
+    1. The DACs were ALREADY powered and settled from the previous
+       session — an STM32 reset does not power-cycle them.
+    2. Motor_Init()'s I2C writes therefore SUCCEED on the first try.
+    3. The bus never wedges. Every subsequent write works. Full movement.
+
+  That is the whole puzzle: reset "fixed" it not because it reset the
+  STM32, but because by the time a human pressed the button, the DAC side
+  had long since become ready — so the early writes that normally wedge
+  the bus succeeded instead.
+
+  ── WHY EARLIER FIX ATTEMPTS ALL FAILED ─────────────────────────────────
+
+  Five attempts failed because every one of them tried to fix things
+  BEFORE or AT the point the contactor closes, and none of them ever
+  VERIFIED that a DAC write actually landed afterwards:
+
+    1. _WaitForDacsReady() polling HAL_I2C_IsDeviceReady() in Motor_Init()
+       — the readiness probe is itself a real I2C transaction, so it could
+       wedge the bus exactly like the write it was trying to protect.
+    2. 3s delay + NVIC_SystemReset() on cold boot — a reset only clears
+       the STM32's own state; it cannot make an external slave release a
+       held-low line, and cannot un-wedge the bus.
+    3. _I2C1_BusRecovery() bit-banging at boot — ran before the DAC side
+       was ready, so it cleared a bus that then simply got re-wedged.
+    4. 3s delay THEN bus recovery — same problem, just later.
+    5. Gating the contactor on DAC success — caused a hard deadlock (see
+       DEADLOCK entry above) and had to be reverted immediately.
+
+  ── WHAT ACTUALLY FIXED IT ──────────────────────────────────────────────
+
+  Core/Src/motor.c, Motor_Energize(). The working ingredient is doing the
+  DAC zeroing AFTER the contactor has closed and settled, and — the part
+  that matters most — VERIFYING the write actually returned HAL_OK, with
+  I2C bus recovery and retry if it did not:
+
+      void Motor_Energize(void)
+      {
+          if (is_energized) return;
+
+          /* best effort, must NOT block arming */
+          if (!_EnsureDacsZeroed()) _DiagLedOn();
+
+          HAL_GPIO_WritePin(Contactor_GPIO_Port, Contactor_Pin, GPIO_PIN_SET);
+          _DelayUs(500000U);          /* 500 ms contactor settle */
+          is_energized = 1;
+          armed        = 1;
+
+          /* THE FIX: retry AFTER the contactor is closed and settled.
+           * This is the first moment the DAC side is reliably able to
+           * respond — and unlike every earlier attempt, this one CHECKS
+           * that the write landed and runs bus recovery + retries if not. */
+          if (_EnsureDacsZeroed()) _DiagLedOff();
+      }
+
+  The two supporting pieces that make that line work:
+
+    · _WriteDacChecked() — returns the HAL status instead of discarding
+      it. The original _WriteDac() threw the return value away, which is
+      precisely why a wedged bus could go undetected indefinitely. This
+      gap existed from the very first version of motor.c and was the
+      single biggest obstacle to diagnosing this — the firmware had no
+      idea its writes were failing.
+
+    · _EnsureDacsZeroed() — writes 0 to both DACs, checks BOTH statuses,
+      and on failure runs _I2C1_Recover() (de-init I2C1, bit-bang 9 SCL
+      pulses to force any stuck slave to release the bus, manual STOP,
+      re-init I2C1) then retries. This is what un-wedges a bus that got
+      stuck during the early boot writes.
+
+  In short: the earlier bus-recovery code was RIGHT, but it was being run
+  at the wrong time and its result was never checked. Moving it after the
+  contactor closes and verifying the outcome is what closed the issue.
+
+  ── CONFIDENCE / WHAT IS STILL INFERENCE ────────────────────────────────
+
+  CONFIRMED (observed on hardware):
+    · The current build works — DACs respond, all movement works.
+    · The deadlock in the previous build was caused by gating the
+      contactor on I2C success (direct logical consequence of that code).
+
+  STRONGLY INFERRED (fits all evidence, NOT independently measured):
+    · That the DACs are unable to respond at Motor_Init() time on a cold
+      boot — most likely because the DAC board is powered from a
+      contactor-switched rail. This was never confirmed with a multimeter.
+      Rover_study.md §9.3 still lists the power rails as unknown.
+
+  STILL OPEN (bundled in the working build, individual contribution not
+  isolated — do NOT assume any of these are load-bearing):
+    · The 3s cold-boot delay in main.c (RCC_FLAG_PORRST/BORRST gated).
+    · _I2C1_BusRecovery() called at boot in main.c.
+    · _WaitForDacsReady() (300ms cap) in Motor_Init().
+    Each could be doing real work or could be dead weight. If anyone wants
+    a cleaner boot, remove them ONE AT A TIME with a test between each —
+    never several at once (that mistake cost several debugging cycles in
+    this session; see the ROLLBACK entry).
+
+  ── STILL WORTH DOING ───────────────────────────────────────────────────
+
+  Measure Vdd at the MCP4725 with the contactor OPEN vs CLOSED. If it
+  reads 0 V with the contactor open, that confirms the inference above,
+  closes out the unknown in Rover_study.md §9.3, and would justify
+  simplifying the boot path (all DAC setup belongs after energising, and
+  the boot-time delay/recovery code could then be removed with
+  confidence).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+██  RESOLVED — ENCODER READING BROUGHT ONLINE AND VERIFIED                 ██
+██  Confirmed working on hardware. Encoders now report correct RPM.        ██
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ── THE GOAL ────────────────────────────────────────────────────────────
+
+  The encoders had never been physically connected on the STM32 build. The
+  encoder driver (encoder.c) had been written back in Session 1 and was
+  already being called every loop tick from main.c — Encoder_Init() and
+  Encoder_Update() were running — but nothing displayed the result, so
+  there was no way to know whether it worked. This was therefore an OUTPUT
+  problem, not a "write the encoder driver" problem.
+
+  Encoder pins (from Core/Inc/main.h + Rover.ioc — the authoritative
+  source; the old Section 2 table was stale and has been corrected):
+      Left  encoder A/B  →  PA0 / PA1   (TIM2, 32-bit, Encoder Mode TI12)
+      Right encoder A/B  →  PA6 / PA7   (TIM3, 16-bit, Encoder Mode TI12)
+
+  ── HOW THE VALUES WERE GOT OUT — THREE ROUTES TRIED ────────────────────
+
+  ROUTE 1 — SWV / ITM trace over SWO (ABANDONED)
+    Plan was to print via ITM to CubeIDE's SWV ITM Data Console. Required
+    enabling SYS → Debug = "Trace Asynchronous Sw" in CubeMX (PB3 = SWO),
+    which was done and regenerated cleanly (verified: I2C still 100 kHz,
+    no duplicate IRQ handlers, USER CODE intact, cold-boot fix preserved).
+    ABANDONED because the CubeIDE debug session would not launch at all:
+        Failed to start GDB server
+        Error in initializing ST-LINK device.
+        Reason: (1) Failed to connect to device.
+    This failed even with SWV unticked, so it was not an SWV problem.
+    Diagnosis showed the ST-Link WAS enumerated on USB (0483:3748) with no
+    stale GDB server holding it, and STM32CubeProgrammer connected and
+    flashed fine — so the hardware/probe/cabling were all good and the
+    fault was specific to the CubeIDE launch configuration. Since SWV
+    fundamentally REQUIRES a live debug session, this route was dropped
+    rather than fought further.
+
+  ROUTE 2 — USB CDC on the Black Pill's USB-C port (REJECTED, not attempted)
+    Rejected after analysis, on a hard technical blocker: USB Full Speed
+    needs exactly 48 MHz from PLLQ, and the current clock tree gives 50 MHz
+        HSI 16 → PLLM 8 → 2 MHz → PLLN 100 → 200 MHz VCO
+                 → PLLP 2 → 100 MHz SYSCLK ✓
+                 → PLLQ 4 →  50 MHz USB    ✗ (needs 48)
+    On STM32F411 the USB clock can ONLY come from PLLQ (no PLLSAI/CK48M mux
+    like the larger F4 parts), so there is no way to have both 100 MHz
+    SYSCLK and valid USB. The only valid combination is a 192 MHz VCO →
+    96 MHz SYSCLK + 48 MHz USB. That would have dropped HCLK 100 → 96 MHz,
+    which silently breaks the TIM5 microsecond timebase (prescaler 99 gives
+    0.96 MHz instead of 1 MHz — every delay, the RC timeout, the loop
+    period, the contactor debounce and the DAC ramp all 4 % off) and would
+    have needed TIM5 prescaler 99 → 95 in the same step, plus USB_DEVICE
+    CDC middleware and a large regeneration. Judged far too much
+    interconnected change at once for the benefit.
+
+  ROUTE 3 — UART → ESP32 → USB serial monitor  ✅ ADOPTED AND WORKING
+    STM32 PA9 (USART1_TX) → ESP32 DevKit V1 GPIO16 (RX2), plus common GND.
+    ESP32 runs a pass-through sketch bridging its UART2 to USB, read in the
+    Arduino IDE Serial Monitor at 115200.
+    Chosen because it needed ZERO CubeMX changes (PA9 was already
+    configured as USART1_TX with UART_MODE_TX_RX), no clock change, no
+    debugger, and works with the CubeProgrammer flash workflow that was
+    already functioning. It also aligns with an existing roadmap item —
+    Section 7 already called for "telemetry → UART to ESP32/ESP8266".
+
+  ── CRITICAL WIRING RULE ────────────────────────────────────────────────
+
+  ONE DIRECTION ONLY: STM32 PA9 → ESP32 GPIO16, plus GND.
+  NOTHING may be connected to STM32 PA10. PA10 is USART1_RX and carries the
+  FlySky iBUS signal; driving it from the ESP32 would collide with the RC
+  link and break control while motors are armed.
+  Both devices are 3.3 V logic, so PA9 connects directly — no level shifter.
+
+  ── CODE ADDED ──────────────────────────────────────────────────────────
+
+  Core/Inc/encoder.h + Core/Src/encoder.c
+    · Encoder_GetCount_L() / Encoder_GetCount_R() — expose the raw extended
+      counter values (return prev_count_l / prev_count_r, the values
+      Encoder_Update() last sampled). Deliberately printed ALONGSIDE RPM:
+      raw counts prove the hardware and wiring work, RPM proves the maths
+      works. Counts moving with RPM wrong = firmware bug; counts frozen =
+      wiring/pin problem. Separating those saves a debugging cycle.
+
+  Core/Src/main.c
+    · _DbgPutc() — writes USART1->DR DIRECTLY, deliberately NOT via
+      HAL_UART_Transmit(). REASON: HAL_UART_Transmit() takes
+      __HAL_LOCK(huart1) and holds it for the entire blocking send; if the
+      iBUS IDLE interrupt fires in that window, the HAL_UART_Receive_DMA()
+      inside IBUS_IdleCallback() returns HAL_BUSY, the RX DMA is never
+      restarted and RC frames are dropped. With iBUS frames every ~7 ms and
+      a multi-ms send, collisions would be frequent — unacceptable with
+      motors powered. TX and RX are independent paths inside the USART, so
+      a direct DR write cannot disturb the RX DMA and never touches the
+      HAL lock.
+      The TXE busy-wait is hardware-bounded (~87 us/char at 115200) since
+      the transmitter always drains whether or not anything is listening —
+      so it can never stall the 20 Hz loop, and it is safe even with
+      nothing connected to PA9.
+    · _DbgPuts() — string wrapper.
+    · _FmtRpm() — formats a float RPM as e.g. "+12.50" WITHOUT using %f.
+      newlib-nano omits float formatting unless -u _printf_float is added
+      to the linker flags, and silently prints nothing or garbage
+      otherwise. Formats via scaled integers instead to sidestep it.
+    · Debug print block in the main loop, rate-limited to ~4 Hz (every 5th
+      tick of the 20 Hz loop). At full 20 Hz a ~70-char line would cost
+      ~10 % of every loop cycle; at 4 Hz it is ~2 % and far more readable.
+
+  esp32_bridge/esp32_bridge.ino  (new file, outside the STM32 project)
+    ESP32 DevKit V1 pass-through bridge: Serial2 (GPIO16) → Serial (USB).
+    Includes a watchdog message if no data arrives for 3 s, which
+    distinguishes "bridge broken" from "STM32 not transmitting" — those
+    otherwise look identical (a blank screen) and waste debugging time.
+    NOTE: GPIO16/17 are free on WROOM-32 (DevKit V1). On WROVER modules
+    those pins are used for PSRAM — use GPIO25/26 there instead.
+
+  ── OUTPUT FORMAT ───────────────────────────────────────────────────────
+
+      CMD L+6.00 R+6.00 | ENC L+5.92 R+6.05 | cnt 412 419
+
+      CMD = commanded wheel RPM from the pipeline
+      ENC = measured wheel RPM from the encoders
+      cnt = raw quadrature counter values (left, right)
+
+    Printing commanded and measured side by side answers several questions
+    in one line: is the encoder wired, is its direction correct, and does
+    the RPM maths agree with what was asked for. It is also exactly the
+    signal needed later for PID tuning.
+
+    Interpreting it:
+      · CMD and ENC same sign, magnitudes close   → working correctly
+      · ENC sign OPPOSITE to CMD on one wheel     → that encoder's A/B
+                                                    phases are swapped
+      · One side stuck at +0.00, cnt frozen       → that encoder not wired
+      · cnt moves but ENC stays 0.00              → turning too slowly;
+                                                    ENC_STOPPED_US (500 ms)
+                                                    is zeroing the reading
+
+  ── RESULT ──────────────────────────────────────────────────────────────
+
+  CONFIRMED WORKING on hardware — encoders read RPM correctly.
+
+  ── STILL OPEN (known, deliberately deferred) ───────────────────────────
+
+  · TIM3 (right encoder) 16-bit overflow is STILL untracked. TIM3_IRQn
+    remains masked at the NVIC, so Encoder_TIM3_OvfCallback() never fires
+    and enc_r_overflow never updates. Expect ONE large bogus ENC R value
+    roughly every 82 s of continuous rotation at full wheel speed (~4.5 min
+    at the 30 % SWC cap), then normal readings resume. Left wheel (TIM2,
+    32-bit) is unaffected — it would not wrap for ~2 months.
+    Periodic spikes on R ONLY are this known issue, NOT a wiring fault.
+    The correct fix is already worked out: POLL the Update flag inside
+    Encoder_Update(), do NOT re-enable the interrupt (that approach caused
+    the Bug #5 full MCU lockup — HAL_TIM_Encoder_Start_IT() enables CC1/CC2
+    edge interrupts, not Update, so an ISR that only clears the Update flag
+    never clears the flag that woke it and re-fires forever).
+  · Low-speed resolution is inherently coarse: one count = 0.5 RPM with the
+    50 ms sampling window, so slow running looks steppy. Fine for
+    telemetry; relevant when PID tuning starts.
+  · The SYS → Debug = "Trace Asynchronous Sw" CubeMX setting is now unused
+    (SWV route abandoned). Harmless to leave; can be reverted to plain
+    "Serial Wire" whenever convenient.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 6 — CURRENT STATE OF ALL FILES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  File                          | Status
+  ------------------------------|------------------------------------------
+  Core/Inc/config.h             | Complete, verified against BBB config.py
+  Core/Inc/motor.h              | Complete
+  Core/Src/motor.c              | ✅ WORKING/CONFIRMED. 3-byte DAC, 100kHz. Dir-change DAC soft-start ramp (fixed reverse-engage). _WriteDacChecked() + _EnsureDacsZeroed() + _I2C1_Recover() — Motor_Energize() closes the contactor UNCONDITIONALLY (never gate arming on I2C — see DEADLOCK) and re-zeroes/verifies the DACs AFTER it closes, which is what RESOLVED the cold-boot issue. PC13 diag LED.
+  Core/Inc/encoder.h            | Encoder_GetCount_L/R() for bench verification. Encoder_TIM3_OvfCallback REMOVED (no longer exists — wrap handled arithmetically).
+  Core/Src/encoder.c            | Encoders read RPM correctly ✅. TIM3 16-bit wrap now handled by _Delta16() modular arithmetic — no interrupt, no overflow counter. Both timers started non-IT. NOT YET FLASHED after the TIM3 fix.
+  Core/Inc/ibus.h               | Reverted IBUS_IsSignalOk() removal 2026-07-30 — otherwise unchanged (IBUS_RxneCallback removed, Session 1/2).
+  Core/Src/ibus.c               | Complete (DMA + IDLE interrupt version; _ToFloat() signed-subtraction fix 2026-07-30 — see Bug #4). This is the ONLY Session 3 code change still active.
+  Core/Inc/pipeline.h           | Complete
+  Core/Src/pipeline.c           | Complete
+  Core/Src/main.c               | ✅ WORKING/CONFIRMED. Auto-energize, 20 Hz loop. Debug telemetry over USART1 TX (PA9) → ESP32 → USB @4Hz: _DbgPutc/_DbgPuts/_FmtRpm. Also carries a cold-boot-only 3s delay (RCC_FLAG_PORRST/BORRST) + _I2C1_BusRecovery() before peripheral init — these are of UNPROVEN individual value (see RESOLVED entry "STILL OPEN"); remove one at a time with a test between if simplifying.
+  esp32_bridge/esp32_bridge.ino | ✅ WORKING/CONFIRMED. ESP32 DevKit V1 (WROOM-32) UART→USB pass-through bridge. Serial2 GPIO16 ← STM32 PA9. NOT part of the STM32 build — upload separately via Arduino IDE.
+  Core/Src/stm32f4xx_it.c       | IDLE hook for iBUS in USER CODE. TIM3_IRQHandler REMOVED — TIM3 now has no handler and no NVIC entry by design (comment left in place warning against re-adding it).
+  Core/Src/stm32f4xx_hal_msp.c  | Reverted to pre-Session-3 state 2026-07-30 — no TIM3 NVIC enable (USART1 NVIC manually added, Session 2, unchanged).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 7 — PENDING TASKS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [x] Verify motor throttle responds after 100 kHz I2C fix — DONE.
+      CONFIRMED WORKING: DACs respond correctly, forward/reverse/steering
+      all functional. Took much longer than expected because a separate
+      cold-boot I2C wedging problem masked it — see the RESOLVED entry
+      above Section 6.
+
+  [ ] Measure MCP4725 Vdd with contactor OPEN vs CLOSED
+      → Confirms/refutes the one remaining inference behind the RESOLVED
+        fix, and closes an "unknown" in Rover_study.md §9.3
+      → If 0 V when open: DAC is on a contactor-switched rail, and the
+        boot-time delay/recovery code in main.c can likely be removed
+
+  [ ] Optional cleanup: trim unproven boot-time code in main.c (3s cold-boot
+      delay, _I2C1_BusRecovery(), _WaitForDacsReady())
+      → Remove ONE AT A TIME with a cold-boot test between each
+      → Do NOT batch these — batching changes is what caused the worst
+        regressions in this session (see ROLLBACK / DEADLOCK entries)
+
+  [x] Connect encoders and verify the STM32 reads RPM — DONE, CONFIRMED
+      WORKING. Values visible over UART → ESP32 → Arduino Serial Monitor.
+      See the RESOLVED-ENCODER entry above Section 6 for the full story
+      (including the two routes tried and rejected first).
+
+  [~] TIM3 16-bit overflow tracking — FIXED IN SOURCE, AWAITING TEST
+      → Implemented as a single isolated change. Approach used is BETTER
+        than the polling plan originally sketched here: instead of polling
+        the Update flag, the wrap is handled purely arithmetically by
+        _Delta16() in encoder.c — take the counter difference modulo 2^16
+        and read the upper half of the range as negative.
+      → Why arithmetic beats polling: no flag to manage, no dependence on
+        WHEN the poll happens, no stale direction-bit read, no overflow
+        counter, no startup-flag edge case (HAL_TIM_Encoder_Init sets UG
+        which leaves UIF set — a polling version would have had to clear
+        that first or spuriously count one wrap at boot), and no critical
+        section. Correct as long as the wheel moves <32767 counts between
+        samples; actual is ~40, so ~800x margin.
+      → Also removed: enc_r_overflow, _read_count_l/_read_count_r,
+        Encoder_TIM3_OvfCallback (from both .c and .h), and the
+        TIM3_IRQHandler in stm32f4xx_it.c. TIM3 is now started non-IT.
+        A comment was left in stm32f4xx_it.c warning against re-adding a
+        TIM3 handler (the Bug #5 interrupt-storm trap).
+      → Encoder_GetCount_L/R() now return accumulated signed totals rather
+        than the raw hardware counter, so the telemetry count no longer
+        visibly jumps at a wrap.
+      → VERIFY: run continuously for >90 s at full wheel speed (or >5 min
+        at the 30 % cap) and confirm no ±32768 spike appears on ENC R.
+        Also confirm reverse still gives negative ENC values on both
+        wheels (the modular arithmetic must work in both directions).
+
+  [ ] Fail to brake on repeated DAC write failure (SAFETY GAP)
+      → Motor_SetSpeeds() uses the fire-and-forget _WriteDac(), which
+        discards the HAL status. If the I2C bus wedges mid-drive, the DAC
+        keeps its last value and the WHEELS KEEP TURNING at the last
+        commanded speed.
+      → Same hazard class as the cold-boot problem but while moving. The
+        checked variant (_WriteDacChecked) already exists and is used in
+        _EnsureDacsZeroed(); the driving path just doesn't use it.
+      → Becomes more pressing when the BNO055 is added, since it is a
+        known I2C clock-stretcher sharing the same bus.
+
+  [ ] Motor.c blocking delays aborting to brake on RC signal loss —
+      REVERTED 2026-07-30, see Rollback
+      → IBUS_IsSignalOk() / _DelayUsSafe() were written and are believed
+        correct, but reverted along with the TIM3 change so root causes
+        could be isolated. The original risk this was meant to address is
+        still real: direction-change (150ms) and reverse-brake (500ms)
+        holds in motor.c are unconditional busy-waits that can delay the
+        400ms RC-loss failsafe by up to ~500ms during a maneuver.
+      → Re-attempt this separately, AFTER Bug #4 is confirmed working
+        alone, not bundled with other changes.
+
+  [x] Fix reverse / left-steering not responding — DONE 2026-07-30, see Bug #4
+      → Root cause: unsigned-subtraction wraparound in ibus.c _ToFloat().
+      → This is the ONLY Session 3 change currently in the code. Rebuilt
+        and flash-tested once already (see Rollback) but bundled with
+        other changes that regressed forward driving — needs a clean
+        re-test with ONLY this change in place to confirm it in isolation.
+
+  [ ] Implement imu.c / imu.h — BNO055 over I2C
+      → Euler angles + 9-axis data
+      → I2C address: 0x28 or 0x29
+
+  [ ] Implement pid.c / pid.h — PID closed-loop speed controller
+      → Encoder RPM feedback → DAC output adjustment
+      → Mirror BBB motor_controller_closed_loop.py
+
+  [ ] Implement GPS module — ZED-F9P over UART
+      → 115200 baud, NMEA/UBX parsing
+      → Requires second UART (USART2 or USART6)
+
+  [ ] Set up telemetry — replace UDP → UART to ESP32/ESP8266 WiFi module
+      → JSON payload: IMU + encoder + motor state at 20 Hz
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 8 — KEY TECHNICAL LESSONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. CubeMX does NOT add NVIC enable for UARTs unless the NVIC panel is
+     explicitly configured. Always check HAL_UART_MspInit() for missing
+     HAL_NVIC_EnableIRQ() calls when interrupts are not firing.
+
+  2. DMA must be enabled in CubeMX before calling HAL_UART_Receive_DMA().
+     If hdmarx is NULL, the call returns HAL_ERROR silently — no crash,
+     no assertion, just no data. Always verify DMA is in MX_DMA_Init().
+
+  3. MX_DMA_Init() must be called BEFORE any peripheral init (MX_I2C1_Init,
+     MX_USART1_UART_Init) in main.c. CubeMX handles this automatically
+     when DMA is added via the GUI.
+
+  4. After CubeMX code regeneration, check stm32f4xx_it.c for duplicate
+     IRQ handlers. CubeMX will add its own handler for any configured IRQ,
+     and any existing USER CODE handler for the same IRQ must be removed.
+
+  5. STM32F4 IDLE flag is cleared by reading SR then DR. The HAL macro
+     __HAL_UART_CLEAR_IDLEFLAG() performs this correctly. Never write
+     to the flag register directly.
+
+  6. MCP4725 Write DAC Register (0x40) requires 3 bytes total:
+       [command=0x40] [D11:D4] [D3:D0 << 4]
+     Python smbus2 write_i2c_block_data(addr, 0x40, [hi, lo]) matches this.
+     Sending only 2 bytes (missing command byte) causes 0x00 fast-write,
+     which always outputs 0 V.
+
+  7. I2C pull-up resistor vs speed: 4.7 kΩ pull-ups → rise time ~470 ns.
+     This is within Standard Mode (100 kHz) limit of 1000 ns,
+     but exceeds Fast Mode (400 kHz) limit of 300 ns.
+     Rule: for 4.7 kΩ pull-ups, always use Standard Mode 100 kHz.
+     For Fast Mode 400 kHz: use 2.2 kΩ or 1 kΩ pull-ups.
+
+  8. Auto-energize on boot: clicking the contactor at startup serves as a
+     hardware "system ready" indicator — audible confirmation that firmware
+     has initialised successfully and motor power is armed.
+
+  9. KNOWN CONTROLLER QUIRK (not a firmware bug — confirmed 2026-07-30 by
+     user, present on BOTH BeagleBone and STM32): the BLDC/e-scooter motor
+     controller will not engage reverse from a dead stop. The operator must
+     briefly command forward first, then reverse, for reverse to actually
+     take effect — even though the REV-pin-then-delay sequence (brake
+     500ms → release → REV pin HIGH → 150ms settle → 20ms → throttle
+     written) is correct and already matches the BBB implementation
+     exactly. This is a characteristic of the controller itself (almost
+     certainly needs to sense actual prior rotation before permitting
+     reversed commutation), not something a firmware delay can fix — don't
+     waste time re-tuning REVERSE_BRAKE_US or the dir-change settle time
+     to try to eliminate this; it's not a timing problem.
+
+     REVISED same day, more precise info from user: on BBB (after later
+     changes), simply HOLDING the reverse command steady for 2-3 seconds
+     was enough — no manual toggling needed, even for an abrupt full-
+     throttle reverse command. On STM32, sustained holding alone was NOT
+     enough; only a GRADUAL pull of the stick, or manually toggling
+     forward/reverse repeatedly, got reverse to engage. Both STM32
+     workarounds have one thing in common: they make the throttle value
+     ramp up gradually instead of jumping straight from 0 to the full
+     commanded value in one step (which is exactly what Motor_SetSpeeds()
+     was doing — a single _WriteDac() call to the final value right after
+     the direction-change delay). This points at the controller rejecting
+     an ABRUPT full-throttle-in-reverse command specifically, not simply
+     needing more elapsed time. See the DAC ramp experiment in Section 9
+     for the fix attempt — this lesson entry will be updated once it's
+     verified on hardware.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 9 — CHRONOLOGICAL SESSION SUMMARY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  SESSION 1 (Previous context — all module code written)
+  ──────────────────────────────────────────────────────
+  · Read and understood all BBB source files
+  · Mapped all BBB peripherals to STM32F411CEU6 pins
+  · Decided encoder strategy: period-based (not counter) for RPM resolution
+  · Guided CubeMX configuration (TIM2/3/4/5, I2C1, USART1, DMA, GPIO)
+  · Wrote all modules: config.h, motor.c/.h, encoder.c/.h, ibus.c/.h,
+    pipeline.c/.h, and updated main.c control loop
+  · User generated CubeMX code, applied module files
+  · Identified 11 build errors → fixed all (Contactor typo, extern decls)
+  · Clean build achieved
+
+  SESSION 2 (Current context)
+  ──────────────────────────────────────────────────────
+  · User flashed via ST-Link — first power-on
+  · Bug #1 (no contactor click) → implemented auto-energize on boot
+  · Contactor confirmed clicking after fix
+  · Bug #2 (iBUS not working):
+      - Fixed missing USART1 NVIC in HAL_UART_MspInit
+      - User added DMA2 Stream2 in CubeMX → DMA now functional
+      - Fixed duplicate USART1_IRQHandler after CubeMX regeneration
+      - Moved IDLE detection into CubeMX handler USER CODE section
+  · iBUS confirmed working (SWD arm/disarm responding)
+  · Bug #3 (throttle no effect):
+      - Identified missing 0x40 command byte in _WriteDac()
+      - Identified I2C speed mismatch (400 kHz with 4.7 kΩ pull-ups)
+      - Fixed both: 3-byte DAC command + 100 kHz I2C
+  · Exported full conversation to conversation_export.txt (200 messages, 224 KB)
+  · Created this WorkLog.txt
+
+  SESSION 3 (2026-07-30 — new engineer, Claude Code, taking over the project)
+  ──────────────────────────────────────────────────────
+  · Read all handover material (this log, conversation_export.txt,
+    Rover_study.md) and cross-checked it against the actual firmware source
+    (Core/*, Rover.ioc), not just the written docs
+  · Found Section 2's pin table was stale — did not match main.h / Rover.ioc.
+    Corrected it in place (see Section 2). Root cause: PB3/PB5 were tried
+    for the right encoder B-phase, then reverted to PA1/PA7, but this log
+    was never updated to match
+  · Found TIM3 update interrupt was enabled at the peripheral
+    (HAL_TIM_Encoder_Start_IT) but never enabled in NVIC → fixed in
+    stm32f4xx_hal_msp.c (see Section 7)
+  · Found the 150ms direction-change hold and 500ms reverse-brake hold in
+    motor.c were unconditional busy-waits inside the main loop, which could
+    delay the 400ms RC-loss failsafe by up to ~500ms during a maneuver →
+    added IBUS_IsSignalOk() + _DelayUsSafe() so both holds abort to brake
+    early if the RC link drops mid-wait (see Section 7)
+  · User rebuilt/flashed the above and field-tested: forward and right
+    steering worked, but reverse had no effect and left steering had no
+    effect (kept turning right)
+  · Diagnosed as Bug #4 — unsigned-subtraction wraparound in ibus.c
+    _ToFloat() (see Bug #4 writeup). Verified by comparing byte-for-byte
+    against the original BBB flysky_receiver.py, which has no equivalent
+    bug since Python ints are signed/arbitrary-precision. Fixed with an
+    explicit signed cast before the subtraction
+  · None of Session 3's fixes have been rebuilt/flashed/tested on hardware
+    yet except the pin-table/NVIC/RC-safe-delay set, which was tested and
+    led to discovering Bug #4 above. Bug #4's fix itself still needs a
+    rebuild + flash + field re-test
+  · User rebuilt/flashed the Bug #4 fix. Result: boot-time contactor click
+    worked, but nothing else responded at all (no forward/reverse/left/
+    right) — a regression from this session's own earlier TIM3 NVIC change,
+    not from Bug #4
+  · Diagnosed as Bug #5 — HAL_TIM_Encoder_Start_IT() enables CC1/CC2 (edge)
+    interrupts, not Update, so the earlier TIM3_IRQHandler (which only
+    serviced Update) never cleared the flag that triggered it → interrupt
+    storm → MCU hang the instant a wheel turned. Verified directly against
+    the HAL source (stm32f4xx_hal_tim.c)
+  · Fixed by removing the interrupt-driven approach entirely and switching
+    TIM3 overflow tracking to polling inside Encoder_Update() — see Bug #5
+    writeup for full file-by-file changes
+  · User rebuilt/flashed the Bug #5 fix. Result: freeze confirmed gone
+    (brake GPIOs release correctly on command — loop is alive), but no
+    forward/reverse/left/right motion happens at all
+  · Ruled out I2C speed (still correctly 100 kHz in both Rover.ioc and
+    main.c) and re-audited the RC→pipeline→motor code path with no further
+    logic bugs found. Root cause NOT YET CONFIRMED — see "OPEN
+    INVESTIGATION" writeup above Section 6
+  · Noted _WriteDac() was silently discarding the I2C HAL status the whole
+    time — added a latching PC13 (onboard LED) indicator that lights if any
+    DAC I2C write fails, to distinguish a hardware-layer I2C problem from a
+    firmware logic problem without needing a debugger
+  · Still needs: rebuild, flash, command motion, and report whether the
+    onboard LED lights up — that determines the next diagnostic branch (see
+    Open Investigation "Next steps")
+  · User rebuilt/flashed the diagnostic-LED version and reported: NO
+    movement in any direction (forward/reverse/left/right all dead), and
+    pointed out that the original unmodified files only had the reverse/
+    left problem — everything else worked. This session's cumulative
+    changes had made things categorically worse
+  · Root-caused the process failure, not just the code: too many
+    speculative changes (TIM3 NVIC/Bug #5/polling revert, RC-safe delays,
+    diagnostic LED) were bundled into one rebuild/test cycle, so when the
+    combined result regressed there was no way to isolate which change did
+    it
+  · ROLLED BACK motor.c, encoder.c, encoder.h, stm32f4xx_it.c,
+    stm32f4xx_hal_msp.c, and ibus.h to their exact pre-Session-3 state.
+    KEPT only the Bug #4 fix in ibus.c (_ToFloat signed-cast) — the one
+    change reasoned through in isolation with no interrupt/timing/state
+    coupling. See "ROLLBACK" entry above Section 6 for full detail
+  · Still needs: rebuild, flash, and test with ONLY the Bug #4 fix in
+    place. Expect forward and right to keep working as before, and reverse
+    and left to now also work. If ANYTHING is still wrong at this point,
+    it narrows to that one small, well-understood change — much easier to
+    debug than the bundle that caused this regression
+  · Going forward: one change per rebuild/flash/test cycle, no exceptions
+  · User rebuilt/flashed with ONLY the Bug #4 fix in place and confirmed:
+    forward and reverse both work now. Bug #4 is CONFIRMED FIXED in
+    isolation — the isolate-and-test approach worked
+  · User reported reverse has a noticeable delay and only reliably engages
+    if forward is toggled first, immediately before commanding reverse.
+    Verified the REV-then-throttle delay sequence is unchanged from BBB
+    (same ~670ms timing, same structure) — not a firmware regression.
+    Asked the user whether BBB needed the same forward-then-reverse toggle;
+    confirmed YES. This is a pre-existing BLDC controller characteristic on
+    both platforms, not a bug — documented as Key Technical Lesson #9, no
+    code change made
+  · Left/right steering not yet explicitly re-confirmed on this rebuild
+    (only forward/reverse mentioned) — worth a quick check next session
+  · User gave more precise detail: on BBB, sustained holding of reverse
+    (2-3s, no toggling) eventually worked; on STM32, only a gradual pull or
+    manual forward/reverse toggling works. This walks back "no code change
+    needed" from Lesson #9 — the common factor in the STM32 workarounds is
+    a GRADUAL throttle ramp, not just elapsed time, suggesting the
+    controller rejects an abrupt full-throttle-in-reverse command
+  · EXPERIMENT (single isolated change, per the one-change-at-a-time rule):
+    added a DAC soft-start ramp, applied ONLY on a direction change.
+      - config.h: DAC_RAMP_STEPS=10, DAC_RAMP_STEP_US=20000 (10 steps ×
+        20ms ≈ 200ms full ramp, 0 → target value)
+      - motor.c: new _RampDac() helper. Motor_SetSpeeds()'s dir_changed
+        branch now calls _RampDac(dac_L, dac_R) instead of a single
+        _WriteDac() at the end of the direction-change delay sequence.
+        The non-dir_changed (continued driving) branch is UNCHANGED —
+        still a direct single write, so ongoing forward/reverse driving
+        isn't touched by this at all
+      - Total added time on a direction-change event: ~200ms (ramp only;
+        replaces what was previously an instant jump to the final value)
+  · NOT YET TESTED on hardware. Needs: rebuild, flash, test reverse
+    specifically — does sustained holding (no toggling, no slow pull) now
+    engage reverse reliably? If yes, update Lesson #9 to record the actual
+    fix. If the ramp alone doesn't help, the controller likely needs a
+    longer sustained hold rather than gradualness — try increasing
+    DAC_RAMP_STEPS/STEP_US next, still in isolation, not combined with any
+    other change
+  · User rebuilt/flashed and tested: reverse now works reliably, no
+    toggling or slow-pull workaround needed. DAC soft-start ramp CONFIRMED
+    as the fix — Lesson #9 stands corrected: the controller needed a
+    gradual throttle ramp on direction change, not just elapsed time
+  · User explicitly asked to pause — no further edits — and resumed later
+    with a new issue: after a full COLD power-up of the whole system,
+    contactor clicks and SWD arm/disarm works, but no movement at all
+    (forward/reverse/anything). Pressing the STM32's own RESET button
+    (not a power cycle) immediately fixes it for the rest of that session
+  · Diagnosed as an I2C cold-boot timing issue (see "EXPERIMENT — No
+    Movement After Cold Power-Up" above Section 6): contactor (GPIO) and
+    iBUS (UART) both work on cold boot and are I2C-independent, which
+    narrows the fault specifically to the DAC/I2C path. Root cause
+    hypothesis: the STM32 boots faster than the DAC board's own supply
+    rail stabilises, and an I2C write attempted too early can wedge the
+    bus or the I2C1 peripheral state until a full re-init (i.e. a reset)
+    clears it
+  · Fix: added _WaitForDacsReady() in motor.c, polling
+    HAL_I2C_IsDeviceReady() for both DACs (capped at 2s) before
+    Motor_Init() ever attempts a real write. Verified HAL_I2C_IsDeviceReady
+    is itself timeout-bounded by reading the HAL source directly, so this
+    can't introduce a new hang
+  · NOT YET TESTED. Needs: rebuild, flash, then power-cycle the WHOLE
+    system from cold several times in a row (not reset) to confirm the
+    fix holds without ever touching the reset button
+  · User rebuilt/flashed and power-cycled the whole system from cold
+    several times: the _WaitForDacsReady() fix did NOT resolve the
+    cold-boot issue. Confirms the caveat already on record — the readiness
+    probe is itself a real I2C transaction, not a safe passive check
+  · User asked directly for a workaround: wait a few seconds after
+    power-up, then force a software reset, since a manual reset is already
+    known to reliably fix it. Implemented in main.c using RCC->CSR's
+    reset-cause flags (RCC_FLAG_PORRST/BORRST vs RCC_FLAG_SFTRST) so this
+    fires exactly once per genuine cold boot and can't loop forever — see
+    "FIX — Forced Software Self-Reset on Cold Boot" above Section 6 for
+    full detail and the danger it avoids
+  · NOT YET TESTED. Needs: rebuild, flash, power-cycle from cold several
+    times (expect ~3s longer before the contactor click, then everything
+    should work immediately), and confirm a manual reset press still
+    behaves normally afterward (shouldn't re-trigger the wait)
+  · User tested: contactor confirmed clicking ~3s later as designed, but
+    the vehicle STILL would not move without a manual reset — the forced
+    self-reset did not fix the underlying issue. User asked to research
+    the actual cause "anywhere," so used WebSearch/WebFetch this time
+    instead of reasoning alone
+  · Confirmed via ST Community threads and an STM32F4-specific writeup:
+    neither hardware NRST nor software NVIC_SystemReset() can release an
+    I2C slave that's actively holding SDA low — a reset only clears the
+    STM32's own peripheral state, not an external device's. This is a
+    well-documented STM32 I2C failure mode with a known fix: manually
+    bit-bang SCL to clock the stuck slave's shift register through
+    whatever byte it froze on, then generate a manual STOP condition,
+    BEFORE the I2C peripheral is ever initialised. See "FIX — I2C1
+    Bus-Clear Recovery" above Section 6 for the full writeup and sources
+  · Implemented _I2C1_BusRecovery() in main.c, removed the now-disproven
+    forced-reset code entirely (no more 3s boot delay)
+  · NOT YET TESTED. Needs: rebuild, flash, power-cycle from cold several
+    times — contactor click should return to its original near-immediate
+    timing, and movement should work without ever touching reset
+  · User tested: bus-clear recovery alone did NOT fix cold-boot movement.
+    Also reported reverse now only engages on a slow stick pull, not a
+    sustained hold — same pattern as before the DAC ramp fix, despite not
+    having touched that code. Working theory: both symptoms are the same
+    underlying I2C reliability problem (an intermittently-bad bus makes
+    "many small writes" look reliable and "one clean write" look broken),
+    not a ramp-logic regression
+  · User asked to bring the 3s cold-boot delay back. Restored it (still
+    scoped to RCC_FLAG_PORRST/BORRST only, still no self-reset — that part
+    stays removed since it's proven not to help) but this time run BEFORE
+    _I2C1_BusRecovery() rather than instead of it, so recovery runs
+    against a DAC that's had time to fully power up rather than a
+    still-ramping one. Deliberately left motor.c untouched — if this fixes
+    I2C reliability, the reverse-hold issue should resolve as a byproduct;
+    if not, that's real evidence to look at the ramp logic separately
+  · NOT YET TESTED. Needs: rebuild, flash, power-cycle from cold several
+    times, checking BOTH symptoms — cold-boot movement AND whether reverse
+    now holds without needing a slow pull
+  · User tested: still not solved. Asked (as a question only, no code
+    change) whether a software reset on every contactor-ON toggle would
+    help — answered no: a reset can't release an external slave holding
+    the bus, and doing it on every energize would infinite-loop against
+    the boot-time auto-arm. Also asked whether switching the MX clock
+    config from HSI+PLL to HSE would fix the NRST behaviour — answered
+    no: the chip always comes out of reset on HSI in hardware before user
+    code picks a clock, so clock source can't affect reset behaviour, and
+    I2C1 still lands at 100 kHz either way
+  · RE-DIAGNOSED the whole problem after four consecutive failed
+    I2C-focused fixes. Key overlooked evidence: the 3s-delay-then-reset
+    attempt DID produce a correctly-delayed contactor click (proving the
+    delay ran and the DAC rail had 3s to settle) yet still no movement —
+    which disproves the pure "DAC not powered in time" theory that all
+    four attempts rested on
+  · New hypothesis: the BLDC controllers latch a refuse-to-run fault at
+    the instant the contactor closes if throttle isn't at zero then. On
+    cold boot the MCP4725 comes up at its EEPROM value (maybe non-zero)
+    and, if the zeroing write fails, the contactor closes over a non-zero
+    throttle → fault latched permanently. On reset the DAC was never
+    power-cycled and still holds 0 V, so the controllers come up clean —
+    exactly why the reset button "fixes" it. Also explains why the
+    previous fix failed: it called _I2C1_Recover() AFTER the contactor
+    had already closed, half a second too late
+  · Fix: Motor_Energize() now PROVES both DACs accepted a zero write
+    (_EnsureDacsZeroed(), with checked HAL status + bus-recovery retries)
+    BEFORE closing the contactor, and refuses to energise + lights PC13 if
+    it can't. See the full write-up above Section 6
+  · NOT YET TESTED. This build is deliberately self-diagnosing — each of
+    the three possible outcomes (moves / clicks-but-no-movement / LED-and-
+    no-click) eliminates a different half of the remaining problem space,
+    so it yields useful information even if it doesn't fix the symptom
+  · User tested: PC13 LED solid on, contactor NEVER closes, and unlike
+    every previous failure this did NOT clear on reset or power cycle —
+    the rover was left completely unable to arm. My change caused this
+  · Root cause of MY regression: gating the contactor on _EnsureDacsZeroed()
+    succeeding is circular if the DAC board is powered from a
+    contactor-switched rail — contactor won't close until the DAC answers,
+    DAC can't answer until it has power, and it has no power until the
+    contactor closes. Unbreakable, reset-immune. See "DEADLOCK" write-up
+    above Section 6
+  · Fixed immediately: contactor closes unconditionally again; DAC zeroing
+    is best-effort and now also retried AFTER the contactor closes (the
+    first moment the DAC can respond in that topology); retry counts and
+    timeouts trimmed so nothing stalls arming
+  · Standing lesson recorded: never make the machine's ability to arm
+    depend on an I2C transaction succeeding — that turns any I2C fault
+    into an unrecoverable brick. Interlocks must fail recoverably
+  · KEY UNKNOWN now blocking further progress: where the MCP4725 DAC board
+    actually gets its supply. Rover_study.md §9.3 lists power rails as
+    unknown. If it's downstream of the contactor, the entire cold-boot
+    investigation was mis-framed — the DAC would be unpowered for all of
+    Motor_Init(), and all DAC setup belongs AFTER energising. Measure Vdd
+    at the DAC with the contactor open vs closed before changing more code
+  · ✅ USER REBUILT/FLASHED AND CONFIRMED: EVERYTHING WORKING. DACs respond
+    correctly, movement works. The long-running cold-boot "no movement"
+    problem is RESOLVED
+  · Wrote up the full explanation as a clearly-marked RESOLVED entry above
+    Section 6 — what the symptom was, the actual cause (early boot I2C
+    writes to a not-yet-ready DAC wedged the bus, and nothing ever checked
+    or recovered it), why the reset button appeared to fix it, why all
+    five earlier attempts failed, and the exact code that fixed it
+  · The working ingredient: verify + retry DAC zeroing AFTER the contactor
+    closes. Earlier attempts had roughly the right idea (bus recovery) but
+    ran it at the wrong time and never checked whether the write landed.
+    The root enabler of the whole mess was _WriteDac() discarding
+    HAL_I2C_Master_Transmit()'s return status since the very first version
+    of motor.c — the firmware could not tell its own writes were failing
+  · Deliberately documented what is CONFIRMED vs INFERRED vs STILL OPEN in
+    that entry, rather than claiming a cleaner diagnosis than the evidence
+    supports. The DAC-power-topology explanation is still an inference —
+    the multimeter check was never done. Several boot-time changes remain
+    bundled and unproven; flagged to be removed one at a time if anyone
+    wants to simplify
+
+  ── ENCODER BRING-UP (same session) ────────────────────────────────────
+  · User raised that the encoders had never been physically connected, and
+    asked how to see RPM values to confirm the STM32 reads them
+  · Established the encoder driver was ALREADY running (Encoder_Init/
+    Encoder_Update called every loop tick since Session 1) — so this was
+    purely an output problem, not a driver-writing problem
+  · Test conditions changed mid-planning: user cannot hand-spin the wheels
+    (20:1 gearbox + BLDC motor), so this had to be a POWERED test with
+    wheels on blocks — which raised the stakes on any debug output that
+    could stall the control loop
+  · Route 1 (SWV/ITM over SWO): CubeMX SYS → Trace Asynchronous Sw done and
+    verified clean, but the CubeIDE debug session would not launch
+    ("Failed to start GDB server / Failed to connect to device"), failing
+    even with SWV off. Diagnosed with lsusb + process checks: ST-Link WAS
+    enumerated, no stale GDB server, and CubeProgrammer connected and
+    flashed fine — so hardware was good and the fault was CubeIDE-specific.
+    Since SWV requires a live debug session, this route was dropped
+  · Route 2 (USB CDC on the Black Pill USB-C): rejected on analysis before
+    attempting. USB FS needs exactly 48 MHz from PLLQ; the current tree
+    gives 50 MHz, and F411 can only clock USB from PLLQ. The only valid
+    combination forces SYSCLK 100 → 96 MHz, which silently breaks the TIM5
+    microsecond timebase (all delays/timeouts 4 % off) and would have
+    required a TIM5 prescaler change plus CDC middleware and a large
+    regeneration — far too much interconnected change at once
+  · Route 3 (UART → ESP32 → USB serial monitor): ADOPTED. Zero CubeMX
+    changes (PA9 already USART1_TX), no clock change, no debugger, works
+    with the CubeProgrammer flash workflow already functioning, and
+    aligns with the existing roadmap item for ESP32 telemetry
+  · Key design decision: _DbgPutc() writes USART1->DR DIRECTLY rather than
+    using HAL_UART_Transmit(), because HAL holds __HAL_LOCK for the whole
+    blocking send and would make IBUS_IdleCallback()'s Receive_DMA return
+    HAL_BUSY — dropping RC frames with motors powered. TX/RX are
+    independent paths so a direct DR write is safe, and the TXE wait is
+    hardware-bounded so it cannot stall the loop
+  · Chose to print COMMANDED vs MEASURED RPM side by side plus raw counts,
+    so one line reveals wiring, direction and maths correctness at once —
+    and it is the exact signal needed later for PID tuning
+  · ✅ USER CONFIRMED: encoders reading RPM correctly
+  · Full write-up added as the RESOLVED-ENCODER entry above Section 6
+
+================================================================================
+  END OF WORK LOG
+================================================================================
