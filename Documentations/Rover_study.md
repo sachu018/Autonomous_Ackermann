@@ -8,6 +8,15 @@
 > can modify, extend, or debug it independently.
 > **Status legend used throughout:** ✅ confirmed working on hardware ·
 > ⚠️ known issue / open · 🔍 inferred, not measured
+> **§14 covers a different, newer firmware build.** Everything in §1–§13 below
+> describes the original **open-loop** `Rover/` project (`pipeline.c` +
+> `kinematics.c` differential-drive control). A separate, actively-developed
+> project, **`Rover_closed_loop/`**, replaces that control pipeline with
+> closed-loop Ackermann front-steering (see `architecture.md` for its full
+> design) and adds a Raspberry Pi 5 autonomous companion computer — §14
+> documents that RPi↔STM32 interconnection specifically. The two firmware
+> builds are siblings, not layers — don't assume anything in §1–§13 about
+> `pipeline.c`/`kinematics.c` still applies once `Rover_closed_loop/` is in use.
 
 ---
 
@@ -26,6 +35,7 @@
 11. [Troubleshooting Guide](#11-troubleshooting-guide)
 12. [File Reference](#12-file-reference)
 13. [Migration Notes: BBB → STM32](#13-migration-notes-bbb--stm32)
+14. [Raspberry Pi 5 Interconnection (`Rover_closed_loop/` only)](#14-raspberry-pi-5-interconnection-rover_closed_loop-only)
 
 ---
 
@@ -832,3 +842,147 @@ port — worth knowing when porting the remaining modules:
   stack; getting it wrong froze the MCU entirely.
 - **Silent error returns.** `smbus2` raises exceptions on I2C failure; the HAL
   returns a status code that is easy to ignore — and was ignored, at length.
+
+---
+
+## 14. Raspberry Pi 5 Interconnection (`Rover_closed_loop/` only)
+
+**This section describes `Rover_closed_loop/`, not the `Rover/` project the rest
+of this document covers.** See the note at the top of this document. Full
+design rationale and the day-by-day build/debug log live in `architecture.md`,
+`scratchpad.md`, `works.md` at the project root — this section is the settled
+reference version of that work, condensed to this document's style.
+
+### 14.1 Why
+
+Autonomous waypoint following (the long-term goal stated in §1) needs
+localization, sensor fusion, and a guidance law — real computational work a
+bare-metal 100 MHz Cortex-M4 isn't the place to do alongside a 20 Hz real-time
+control loop. A Raspberry Pi 5 is added as a companion computer to own that
+layer, while the STM32 keeps owning everything safety-critical and real-time
+that it already does (steering PID/bang-bang control, the Ackermann electronic
+differential, contactor arming, RC failsafes) — the RPi becomes a second
+*command source*, not a replacement for the STM32's control authority.
+
+### 14.2 Physical Link ✅
+
+STM32 **USART2** ↔ Raspberry Pi 5 primary UART, GND common:
+
+| STM32 | RPi 5 |
+|---|---|
+| PA3 (USART2_RX) | Pin 8 / GPIO14 (TXD) |
+| PA2 (USART2_TX) | Pin 10 / GPIO15 (RXD) |
+| GND | GND (any GND pin) |
+
+115200 8N1, DMA + IDLE-line framing on the STM32 side (`rpi_link.c`, mirrors
+`ibus.c`'s pattern for the RC link on USART1) — see §14.7 for the frame
+formats.
+
+**⚠️ RPi 5 OS-level prerequisites — not obvious, cost real debugging time to
+find:**
+1. `GPIO14`/`GPIO15` carry the Linux login console by default on Raspberry Pi
+   OS. Must be freed: disable the `console=serial0,...` kernel parameter and
+   the `serial-getty` unit for whichever `ttyAMA` node `/dev/serial0` resolves
+   to (varies by Pi/image — was `ttyAMA10` on the unit this was built against,
+   not the `ttyAMA0` older Pi docs assume).
+2. **The Pi 5's onboard Bluetooth shares this exact same UART.** Even after
+   step 1, Bluetooth's own boot-time attach process (`hci_uart_bcm`,
+   independent of the console) re-claims the port. Fix: `dtoverlay=disable-bt`
+   in `/boot/firmware/config.txt` — this disables Bluetooth on the Pi
+   permanently, an accepted trade-off since BT isn't used anywhere here.
+3. **`enable_uart=1` in `config.txt` — this was the actual root cause of an
+   extended "zero bytes arriving" debugging session, not step 1 or 2.**
+   Without it, `GPIO14`/`GPIO15` are never switched into UART
+   alternate-function mode at the hardware level, even though `/dev/ttyAMA10`
+   exists as a kernel device node and a getty may even have run on it
+   previously. **Neither a device node existing nor a systemd unit reporting
+   "active" proves the GPIO pins are actually hardware-muxed to the
+   peripheral** — verify directly with `pinctrl get 14,15` (expect
+   `GPIO14 = TXD0`, `GPIO15 = RXD0`; `none`/`none` means step 3 is missing).
+
+### 14.3 Division of Responsibility
+
+| Layer | Runs on | Owns |
+|---|---|---|
+| Guidance & sensing | Raspberry Pi 5 | IMU + GNSS fusion, localization, path/waypoint management, guidance law → target steering angle + speed |
+| Real-time actuation | STM32F411 (`Rover_closed_loop/`) | Steering PID/bang-bang, ADS1115 feedback, Ackermann differential, encoder feedback, contactor/arming, all RC failsafes |
+
+### 14.4 Mode Arbitration — SWD / SWB
+
+Transmitter switches, read via the existing iBUS link on **PA10** (same
+physical RC receiver and pin as §2.4/§3 — unchanged):
+
+- **SWD** — arm/disarm the contactor. Same role as the base `Rover/` project.
+- **SWB** — **repurposed** in `Rover_closed_loop/` from its `Rover/` role
+  (§2.4: reverse-speed-cap). Here it's a pure **MANUAL / AUTO** command-source
+  select: below `SWB_THRESH` → MANUAL (RC sticks, as normal); at/above it →
+  AUTO (RPi command, only while the link is also healthy — §14.6). Switch-down
+  is MANUAL by default, the safer resting state if SWB is never touched.
+  Reverse-speed-cap is gone as a consequence — reverse now runs at the same
+  cap forward does.
+
+### 14.5 UART Protocol ✅ (verified working end-to-end on hardware)
+
+20 Hz, binary, fixed-size frames, little-endian, matching the STM32's own
+control-loop rate.
+
+**Command frame, RPi → STM32, 8 bytes:**
+
+| Byte(s) | Field | Meaning |
+|---|---|---|
+| 0–1 | header | `0xAA 0x55` |
+| 2–3 | `int16` steer_target | degrees × 100, −4500..+4500 |
+| 4–5 | `int16` speed_target | mm/s, signed |
+| 6 | `uint8` seq | rolling counter (parsed, not yet consumed by the STM32) |
+| 7 | `uint8` checksum | XOR of bytes 0–6 |
+
+**Feedback frame, STM32 → RPi, 12 bytes — sent every tick regardless of
+MANUAL/AUTO or armed state:**
+
+| Byte(s) | Field | Meaning |
+|---|---|---|
+| 0–1 | header | `0xBB 0x66` |
+| 2–3 | `int16` angle_L | degrees × 100 |
+| 4–5 | `int16` angle_R | degrees × 100 |
+| 6–7 | `int16` rpm_L | RPM × 10 |
+| 8–9 | `int16` rpm_R | RPM × 10 |
+| 10 | `uint8` status | bitfield: bit0 ARMED, bit1 STEER_FAULT, bit2 AUTO_ACTIVE, bit3 RC_OK |
+| 11 | `uint8` checksum | XOR of bytes 0–10 |
+
+### 14.6 Failsafe ✅
+
+`AUTO_UART_TIMEOUT_US` (300 ms) — same failsafe class as the existing 400 ms
+RC-loss timeout (§8.2). If SWB is AUTO and no valid command frame has arrived
+within that window, the STM32 forces a brake regardless of the last command
+received, independent of what the RPi is doing. SWB back to MANUAL always
+hands control back to the RC sticks immediately, independent of UART link
+state.
+
+### 14.7 Verification Performed
+
+Confirmed on hardware, rover on a jack: `check_stm32_link.py` (RPi side) shows
+a steady **20.0 frames/s, zero checksum failures**, correct `ARMED`/`RC_OK`
+status bits. `read_encoders.py` shows live, sane `rpm_L`/`rpm_R` (0.00,
+correct with wheels off the ground) and steering angles. An `ESP32_uart_sniffer`
+(a read-only tap directly on STM32 `PA2`, deliberately one-way — same safety
+rule as the existing PA9 debug bridge in §2.7, never connect its TX to `PA3`
+while the RPi is also wired there) was used during bring-up to isolate the
+STM32 side of the link from the RPi side and prove the STM32 was transmitting
+correctly the whole time the RPi-side symptom was being debugged.
+
+### 14.8 File Reference
+
+| File | Purpose |
+|---|---|
+| `Rover_closed_loop/Core/Src/rpi_link.c` `.h` | USART2 DMA+IDLE framing, command parse, feedback send |
+| `Rover_closed_loop/Core/Src/ackermann.c` — `Ackermann_RunAuto()` | Autonomous motion pipeline: takes the RPi's absolute steering/speed targets directly, bypassing the RC stick deadband/curve; electronic differential still runs off the *measured* angle, same as manual mode |
+| `RPi_companion/uart_link.py` | RPi-side counterpart to `rpi_link.c` — same frame formats, independently maintained (no shared schema file) |
+| `RPi_companion/check_stm32_link.py` | Connectivity diagnostic — frame rate, checksum failures, status bits |
+| `RPi_companion/read_encoders.py` | Passive live readout of wheel RPM + steering angle |
+| `RPi_companion/imu.py` + `test_imu.py` + `calibrate_imu.py` | DFRobot Fermion BNO055 driver (RPi-local, I2C1 on `GPIO2`/`GPIO3`/Pin3/Pin5) — not part of the STM32 interconnection itself, but the other half of what the RPi's guidance layer will fuse |
+| `ESP32_uart_sniffer/ESP32_uart_sniffer.ino` | Bring-up diagnostic only — read-only tap on STM32 `PA2` |
+
+**Not yet built:** the actual guidance/localization loop on the RPi that
+*uses* this link (waypoint following, IMU/GNSS fusion) — the interconnection
+and both endpoints' diagnostics are verified working, but nothing autonomous
+runs yet. See `architecture.md`'s Phase 5 checklist for current status.

@@ -233,8 +233,10 @@ New top-level directory for all Raspberry Pi 5 Python code — parallel to `Rove
 - [x] Configured USART2 (PA2/PA3) in `Rover.ioc` / CubeMX — Asynchronous, RX via DMA1_Stream5 + IDLE interrupt (mirrors the USART1/iBUS pattern), code generated and verified against the §10.3 checklist.
 - [x] Implemented UART command/feedback framing on the STM32 side (`rpi_link.c/h`) + `AUTO_UART_TIMEOUT_US` failsafe + SWB mode-select wiring in `main.c`. See scratchpad.md for the implementation notes and one regeneration-related regression found and fixed along the way.
 - [x] Firmware rebuilt and reflashed to the STM32 with these changes.
-- [ ] **Not yet tested with a live RPi** — nothing has driven the UART link yet from the RPi side.
-- [ ] Port/adapt guidance stack to the RPi (localization, path manager, guidance law) from `Old_files/UGV_closed/`, replacing direct hardware access with the UART client.
-- [ ] Wire IMU + RTK GNSS directly to the RPi (replacing the old BBB↔RPi TCP link for RTK). **In progress:** IMU driver (`RPi_companion/imu.py`) written for the DFRobot Fermion BNO055 on I2C1 — not yet hardware-verified, no RTK work started (see §3.6).
-- [ ] Bench test: RPi sends synthetic steer/speed targets over UART, verify STM32 executes them and reports feedback correctly, with SWD/SWB physically toggled on the transmitter.
+- [x] UART link tested end-to-end with a live RPi — see §3.8. 20.0 frames/s, zero checksum failures, correct status bits, confirmed via both `check_stm32_link.py` and `read_encoders.py`, cross-checked with an independent ESP32 sniffer during bring-up.
+- [x] IMU hardware-verified — `test_imu.py` shows live, sane heading/roll/pitch/calibration data from the DFRobot Fermion BNO055 on the RPi's I2C1 (see §3.6). Calibration ritual (`calibrate_imu.py`) not yet run.
+- [x] Interconnection ported into `Documentations/Rover_study.md` (new §14) as the settled reference version, once verified working — `architecture.md`/`scratchpad.md`/`works.md` remain the working/build-log docs.
+- [ ] Port/adapt guidance stack to the RPi (localization, path manager, guidance law) from `Old_files/UGV_closed/`, replacing direct hardware access with the UART client. **Not started.**
+- [ ] Wire RTK GNSS to the RPi (replacing the old BBB↔RPi TCP link for RTK). **Not started.**
+- [ ] Bench test: RPi sends a *non-neutral* steer/speed target over UART with SWB physically flipped to AUTO on the transmitter, verify the STM32 actually drives the actuator/motors accordingly (only neutral 0°/0 m/s commands and passive listening have been tested so far — the AUTO-mode motion path itself is unexercised).
 - [ ] Field test: full autonomous waypoint run.

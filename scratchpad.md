@@ -184,6 +184,14 @@ This document tracks mistakes encountered during the project evolution, how they
 
 ---
 
+### Note: RPi↔STM32 Interconnection Ported into Rover_study.md (New §14)
+- **What happened:** User asked to fold the now-verified RPi↔STM32 interconnection into `Documentations/Rover_study.md` — the "complete technical reference for a new engineer" document, distinct from `architecture.md` (the working/planning doc this whole Phase 5 effort has been tracked in).
+- **Important distinction preserved:** `Rover_study.md` describes the original **open-loop** `Rover/` build (`pipeline.c`/`kinematics.c`), not `Rover_closed_loop/` where the RPi link actually lives. Rather than blending the two, added a prominent note at the top of the document and scoped the new content as §14, explicitly labeled "Rover_closed_loop/ only" throughout, so a reader doesn't assume `pipeline.c`/`kinematics.c` and the RPi link coexist in one firmware — they don't, the two are sibling projects.
+- **Content ported:** physical link + RPi5 OS gotchas (console/Bluetooth/`enable_uart=1`), division of responsibility, SWB mode-arbitration (explicitly noted as a *different* SWB meaning than `Rover/`'s own §2.4 table), the full frame-format tables, failsafe, verification performed (real numbers: 20.0 frames/s, 0 bad), and a file reference. Condensed from `architecture.md` §3's fuller build-log style into `Rover_study.md`'s settled-reference style (its own status legend, tables, no chronological "here's what we tried" narrative).
+- **Deliberately left untouched:** §2.6 (IMU) and §9.4's BNO055-on-the-throttle-bus warning still describe the `Rover/` project's *plan* to share I2C1 between the IMU and DACs — moot for `Rover_closed_loop/`, where the IMU lives entirely on the RPi's own I2C1, never touching the STM32 bus at all. Not corrected/annotated since it's still accurate for `Rover/` and out of scope of "the RPi↔STM32 interconnection" — flagging here in case a future full `Rover_study.md` overhaul is requested.
+
+---
+
 ### Note: RPi5 UART Pins Confirmed — GPIO14/GPIO15 (Pin8/Pin10)
 - **What happened:** User confirmed the RPi5 side of the STM32 UART link uses the primary UART, `GPIO14`/Pin8 (TXD) and `GPIO15`/Pin10 (RXD) — the standard pins, as expected, matching `board.I2C()`-style defaults for the RPi ecosystem.
 - **Flagged, not yet resolved by the user:** these pins default to carrying the Linux serial **console** (login shell over UART) on Raspberry Pi OS. Needs disabling via `raspi-config` (serial hardware ON, login shell OFF) before the link is usable — added to the architecture.md §3.6 setup checklist. Not yet confirmed done on the actual RPi5.
