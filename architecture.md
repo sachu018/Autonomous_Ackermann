@@ -186,6 +186,46 @@ New top-level directory for all Raspberry Pi 5 Python code — parallel to `Rove
 
 **Lesson for future RPi UART/GPIO work:** verify pin mux directly with `pinctrl get <pin>` before trusting a device node's existence or a systemd unit's "active" status as proof the hardware is actually configured — this applies to any future GPIO-peripheral wiring on this Pi, not just this UART.
 
+### 3.9 Guidance Stack Design (No RTK — Dead Reckoning Only)
+
+Studied `Old_files/dev_bak/`'s BBB-era encoder+IMU-only autonomous scripts (`ugv_p_waypoint.py`, `ugv_pid_waypoint.py`, `ugv_p_circle.py`/`_eight.py`/`_lawnmower.py`/`_lawnmower1.py`, and the 9-axis variant) before designing this — they're the closest prior art to what this rover needs, since it has no RTK wired to the RPi either. Key findings from that study, and the design decisions built on them:
+
+**How the BBB system worked:** encoder ticks → distance traveled; BNO055 IMU's own fused Euler heading (not integrated from wheel odometry) → absolute-ish yaw. Position: `x += d·cos(yaw); y += d·sin(yaw)`. An outer P or PID loop (`ugv_p_*.py` vs `ugv_pid_*.py` — same skeleton, differ only in whether the outer loop has an I/D term) turned distance-to-goal and heading-error into linear/angular velocity, converted to differential wheel RPM, closed by an inner PI loop on encoder RPM. All of `waypoint`/`circle`/`eight`/`lawnmower` variants share one identical waypoint loader — **the pattern shape lived entirely in which CSV was loaded, not in the script.** The circle/eight/lawnmower CSVs themselves no longer exist anywhere in the backup.
+
+**Chassis constants matched ours exactly:** `a=0.175` (wheel radius), `d=0.30` (half-track) are `WHEEL_RADIUS_M`/`TRACK_WIDTH_M/2` from our own `config.h` — but that geometry is for **differential drive**; this rover is Ackermann, so the low-level V,W→wheel-RPM conversion and the BBB's motor/DAC/PI-speed-loop code don't transfer. The dead-reckoning math and the outer guidance *concept* do.
+
+**Coordinate frame — compass-referenced, not start-relative.** Local Cartesian meters (no lat/lon/UTM anywhere), but heading 0° is locked to a fixed IMU compass reading at mission start (same `yaw_start`-lock trick the BBB scripts used, reused here so a pattern keeps the same real-world orientation across repeated runs, not just within one run).
+
+**Algorithm — Pure Pursuit, not heading-error P/PID.** The BBB's `W`-based steering doesn't map onto Ackermann (no direct angular-velocity actuator, only a steering angle). Pure Pursuit's lookahead-point geometry outputs a steering angle directly (`δ = atan(2·L·sin(α)/Ld)`), which drops straight into `uart_link.py`'s `send_command(steer_target_deg, speed_target_ms)` with no intermediate conversion.
+
+**Tuned parameters, final:**
+
+| Parameter | Value | Basis |
+|---|---|---|
+| Lookahead `Ld` | 0.8 m | Same as old system's `LOOK_AHEAD_DIST` |
+| Waypoint spacing — straight | 1.0 m | Matches old `waypoints_1m.csv` convention |
+| Waypoint spacing — curves | 0.3 m | User decision |
+| Lawnmower row spacing | 1.0 m | User decision — see finding below |
+| Waypoint-reached / mission-end threshold | 0.25 m | Tightened from the old system's 0.4m (RTK-noise-tuned; ours is dead-reckoning-drift-tuned, and our path itself is denser) |
+| Heading-error bound (speed shaping) | 25° | Kept as old default, deferred to field tuning |
+| Speed-shaping cos floor | 0.2 | Kept as old default (`V *= max(0.2, cos(bounded heading error))`), deferred to field tuning |
+| Cruise speed | 0.2 m/s (placeholder) | **Not yet decided by the user** — conservative default, flagged for review |
+
+Since curve spacing (0.3m) is narrower than `Ld` (0.8m) — the opposite relationship the old system had (`Ld` narrower than its 1.0m spacing) — the lookahead point on curves routinely spans several waypoints at once. Implemented proper circle-path intersection search (`guidance.py`) rather than porting the old segment-local projection code, which assumed the lookahead point stays within the current segment.
+
+**⚠️ Physical-feasibility finding: lawnmower turn radius.** A clean single-arc U-turn at 1.0m row spacing needs a 0.5m turn radius. This chassis's actual minimum (wheelbase 0.8m, 45° max lock) is **0.8m** — tighter than the vehicle can steer. `waypoints.py`'s `_semicircle_turn()` catches this (compares against `MIN_TURN_RADIUS_M`) and uses 0.8m instead, landing the turn **1.6m over, not 1.0m**, printing a warning when it does. Confirmed via smoke test: a 4-row/3-turn lawnmower pattern ends up offset by exactly 4.8m (3×1.6m). A true 1.0m in-spacing turn would need a reverse/three-point-turn maneuver — not implemented, would need explicit sizing before building. **Not yet decided by the user** whether this is acceptable or worth building the tighter-turn version.
+
+**File reference:**
+
+| File | Purpose |
+|---|---|
+| `RPi_companion/rover_config.py` | Shared tunables — mirrors STM32 `ackermann_config.h`/`config.h` geometry constants, plus all the guidance parameters above. No shared header between Python and C; kept in sync by hand |
+| `RPi_companion/waypoints.py` | Pattern generators (straight/rectangle/circle/lawnmower) + CSV I/O, pure geometry, no hardware access |
+| `RPi_companion/odometry.py` | Dead-reckoning `Pose` estimator — fuses `imu.py` heading + STM32 encoder feedback |
+| `RPi_companion/guidance.py` | `PurePursuit` controller — `Pose` + path in, `(steer_target_deg, speed_target_ms)` out |
+
+**Status:** all three logic modules (`waypoints.py`, `odometry.py`, `guidance.py`) verified via standalone smoke tests on this dev laptop (no hardware needed for any of them). **Not yet deployed to the RPi** (network connectivity to the Pi was down when this was built) and **no `mission.py` yet** tying them together with `uart_link.py` into an actual running autonomous loop.
+
 ---
 
 ## 4. Version Control
@@ -236,7 +276,7 @@ New top-level directory for all Raspberry Pi 5 Python code — parallel to `Rove
 - [x] UART link tested end-to-end with a live RPi — see §3.8. 20.0 frames/s, zero checksum failures, correct status bits, confirmed via both `check_stm32_link.py` and `read_encoders.py`, cross-checked with an independent ESP32 sniffer during bring-up.
 - [x] IMU hardware-verified — `test_imu.py` shows live, sane heading/roll/pitch/calibration data from the DFRobot Fermion BNO055 on the RPi's I2C1 (see §3.6). Calibration ritual (`calibrate_imu.py`) not yet run.
 - [x] Interconnection ported into `Documentations/Rover_study.md` (new §14) as the settled reference version, once verified working — `architecture.md`/`scratchpad.md`/`works.md` remain the working/build-log docs.
-- [ ] Port/adapt guidance stack to the RPi (localization, path manager, guidance law) from `Old_files/UGV_closed/`, replacing direct hardware access with the UART client. **Not started.**
+- [x] Guidance stack built: `rover_config.py` (shared tunables, mirrors STM32 `ackermann_config.h`), `waypoints.py` (straight/rectangle/circle/lawnmower pattern generation + CSV I/O), `odometry.py` (encoder+IMU dead-reckoning pose), `guidance.py` (Pure Pursuit). All three logic modules verified via standalone smoke tests (no hardware) — not yet deployed/run on the RPi itself (network connectivity to the Pi was down at write time) and not yet wired into a `mission.py` top-level loop that actually calls `uart_link.send_command()`. See §3.9 for the full design discussion and one real physical-feasibility finding (lawnmower turn radius).
 - [ ] Wire RTK GNSS to the RPi (replacing the old BBB↔RPi TCP link for RTK). **Not started.**
 - [ ] Bench test: RPi sends a *non-neutral* steer/speed target over UART with SWB physically flipped to AUTO on the transmitter, verify the STM32 actually drives the actuator/motors accordingly (only neutral 0°/0 m/s commands and passive listening have been tested so far — the AUTO-mode motion path itself is unexercised).
 - [ ] Field test: full autonomous waypoint run.
