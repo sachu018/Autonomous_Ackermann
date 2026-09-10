@@ -60,6 +60,7 @@ class Odometry:
         self._wheel_radius_m = wheel_radius_m
         self._pose = Pose()
         self._yaw_ref = None  # IMU heading captured as this mission's 0-reference
+        self.last_imu_data = None  # full imu.IMUData from the most recent update() — for logging
 
     def reset(self, x=0.0, y=0.0):
         """Re-zero POSITION ONLY — call this at the start of each mission
@@ -83,6 +84,7 @@ class Odometry:
         elapsed time since the previous call. Returns the updated Pose
         (also available via .pose)."""
         imu_data = self._imu.read()
+        self.last_imu_data = imu_data  # exposed for the caller to log raw IMU fields
 
         # Heading: directly from the IMU's fused output, not integrated.
         # imu.py already holds the last-good value across transient I2C

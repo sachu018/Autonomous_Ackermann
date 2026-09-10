@@ -35,7 +35,14 @@
 #   python3 mission.py --pattern circle --diameter 6
 #   python3 mission.py --pattern lawnmower --row-length 6 --num-rows 4
 #   python3 mission.py --csv my_path.csv
-# Add --save-csv out.csv to also save a generated pattern for inspection/reuse.
+#
+# Every run automatically archives the path actually used AND a detailed
+# telemetry log (pose, commands, Pure Pursuit internals incl. cross-track
+# error, full STM32 feedback, raw IMU) to ~/RPi_companion/logs/, both
+# sharing one timestamp so they're easy to pair up for plotting/tuning.
+# Add --save-csv out.csv to ALSO save a copy of a generated pattern
+# somewhere reusable (e.g. to load back in later with --csv) — this is
+# optional, separate from the automatic per-run archive.
 
 import argparse
 import csv as csv_module
@@ -56,55 +63,93 @@ LOOP_HZ = 20
 LOOP_PERIOD_S = 1.0 / LOOP_HZ
 
 
-def build_path(args):
+def build_path(args, timestamp):
+    """Builds the path AND always archives whatever was actually used
+    (generated or loaded) into logs/mission_<timestamp>_path.csv — same
+    timestamp as the telemetry log from MissionLogger, so the two files
+    for one run are trivially paired up for plotting later. --save-csv is
+    for ALSO saving a copy somewhere reusable (e.g. to --csv it back in
+    on a later run); it's not what makes the run's own path recoverable."""
     if args.csv:
         path = wp.load_csv(args.csv)
         print(f"[Mission] Loaded {len(path)} waypoints from {args.csv}")
-        return path
+    else:
+        generators = {
+            "straight": lambda: wp.generate_straight_line(args.length),
+            "rectangle": lambda: wp.generate_rectangle(args.width, args.height),
+            "circle": lambda: wp.generate_circle(args.diameter),
+            "lawnmower": lambda: wp.generate_lawnmower(
+                args.row_length, args.num_rows, row_spacing=args.row_spacing),
+        }
+        path = generators[args.pattern]()
+        print(f"[Mission] Generated {len(path)} waypoints for pattern "
+              f"'{args.pattern}'")
 
-    generators = {
-        "straight": lambda: wp.generate_straight_line(args.length),
-        "rectangle": lambda: wp.generate_rectangle(args.width, args.height),
-        "circle": lambda: wp.generate_circle(args.diameter),
-        "lawnmower": lambda: wp.generate_lawnmower(
-            args.row_length, args.num_rows, row_spacing=args.row_spacing),
-    }
-    path = generators[args.pattern]()
-    print(f"[Mission] Generated {len(path)} waypoints for pattern "
-          f"'{args.pattern}'")
+    log_dir = os.path.expanduser("~/RPi_companion/logs")
+    os.makedirs(log_dir, exist_ok=True)
+    archive_path = os.path.join(log_dir, f"mission_{timestamp}_path.csv")
+    wp.save_csv(path, archive_path)
+    print(f"[Mission] Path archived to {archive_path}")
 
     if args.save_csv:
         wp.save_csv(path, args.save_csv)
-        print(f"[Mission] Saved to {args.save_csv}")
+        print(f"[Mission] Also saved to {args.save_csv}")
 
     return path
 
 
+# Telemetry log columns. Grouped by source so it's easy to find things when
+# plotting: pose/commands, Pure Pursuit internals (for tuning Ld/spacing/
+# thresholds against real cross-track error), STM32 feedback, raw IMU.
+_LOG_COLUMNS = [
+    "t_s", "x_m", "y_m", "yaw_deg",
+    "steer_cmd_deg", "speed_cmd_ms",
+    "cte_m", "alpha_deg", "lookahead_x_m", "lookahead_y_m",
+    "target_idx", "mission_finished",
+    "angle_L_deg", "angle_R_deg", "rpm_L", "rpm_R",
+    "armed", "auto_active", "rc_ok", "steer_fault", "link_ok",
+    "imu_heading_deg", "imu_roll_deg", "imu_pitch_deg", "imu_gyro_z_rads",
+    "imu_accel_x_ms2", "imu_accel_y_ms2",
+    "imu_calib_sys", "imu_calib_gyro", "imu_calib_accel", "imu_calib_mag",
+    "imu_valid",
+]
+
+
 class MissionLogger:
-    def __init__(self, log_dir="~/RPi_companion/logs"):
+    def __init__(self, timestamp, log_dir="~/RPi_companion/logs"):
         log_dir = os.path.expanduser(log_dir)
         os.makedirs(log_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.path = os.path.join(log_dir, f"mission_{timestamp}.csv")
         self.file = open(self.path, "w", newline="")
         self.writer = csv_module.writer(self.file)
-        self.writer.writerow([
-            "t_s", "x_m", "y_m", "yaw_deg",
-            "steer_cmd_deg", "speed_cmd_ms",
-            "angle_L_deg", "angle_R_deg", "rpm_L", "rpm_R",
-            "armed", "auto_active", "rc_ok", "steer_fault", "link_ok",
-        ])
+        self.writer.writerow(_LOG_COLUMNS)
         print(f"[Mission] Logging to {self.path}")
 
-    def log(self, t, pose, steer_cmd, speed_cmd, fb):
+    def log(self, t, pose, steer_cmd, speed_cmd, guidance, fb, imu_data):
+        la = guidance.last_lookahead or (float("nan"), float("nan"))
         self.writer.writerow([
             f"{t:.3f}", f"{pose.x:.3f}", f"{pose.y:.3f}",
             f"{math.degrees(pose.yaw):.1f}",
             f"{steer_cmd:.2f}", f"{speed_cmd:.3f}",
+            f"{guidance.last_cte_m:.3f}" if guidance.last_cte_m is not None else "",
+            f"{guidance.last_alpha_deg:.2f}" if guidance.last_alpha_deg is not None else "",
+            f"{la[0]:.3f}", f"{la[1]:.3f}",
+            guidance.last_target_idx, int(guidance.is_finished()),
             f"{fb.angle_L_deg:.2f}", f"{fb.angle_R_deg:.2f}",
             f"{fb.rpm_L:.2f}", f"{fb.rpm_R:.2f}",
             int(fb.armed), int(fb.auto_active), int(fb.rc_ok),
             int(fb.steer_fault), int(fb.valid),
+            f"{imu_data.heading_deg:.2f}" if imu_data else "",
+            f"{imu_data.roll_deg:.2f}" if imu_data else "",
+            f"{imu_data.pitch_deg:.2f}" if imu_data else "",
+            f"{imu_data.gyro_z_rads:.4f}" if imu_data else "",
+            f"{imu_data.accel_x_ms2:.3f}" if imu_data else "",
+            f"{imu_data.accel_y_ms2:.3f}" if imu_data else "",
+            imu_data.calib_sys if imu_data else "",
+            imu_data.calib_gyro if imu_data else "",
+            imu_data.calib_accel if imu_data else "",
+            imu_data.calib_mag if imu_data else "",
+            int(imu_data.valid) if imu_data else 0,
         ])
 
     def close(self):
@@ -129,7 +174,8 @@ def main():
     if not args.csv and not args.pattern:
         parser.error("Specify either --csv <file> or --pattern <name>")
 
-    path = build_path(args)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = build_path(args, timestamp)
     if len(path) < 2:
         print("[Mission] Path needs at least 2 waypoints. Aborting.")
         sys.exit(1)
@@ -149,7 +195,7 @@ def main():
 
     odo = Odometry(imu, cfg.WHEEL_RADIUS_M)
     guidance = PurePursuit(path)
-    logger = MissionLogger()
+    logger = MissionLogger(timestamp)
 
     print("\n[Mission] Ready. SWB=MANUAL is safe — commands are computed "
           "and sent but the STM32 ignores them. Flip SWB to AUTO on the "
@@ -191,13 +237,16 @@ def main():
                 steer_cmd, speed_cmd = guidance.update(pose)
 
             link.send_command(steer_cmd, speed_cmd)
-            logger.log(now - t_start, pose, steer_cmd, speed_cmd, fb)
+            logger.log(now - t_start, pose, steer_cmd, speed_cmd,
+                       guidance, fb, odo.last_imu_data)
 
+            cte_str = f"{guidance.last_cte_m:+5.2f}" if guidance.last_cte_m is not None else " ---"
             print(f"\r[{now - t_start:7.1f}s] "
                   f"{'AUTO' if fb.auto_active else 'MANUAL':6} "
                   f"link:{'OK' if fb.valid else 'LOST':4} | "
                   f"pose x={pose.x:+6.2f} y={pose.y:+6.2f} "
                   f"yaw={math.degrees(pose.yaw):+6.1f} | "
+                  f"cte={cte_str}m | "
                   f"cmd steer={steer_cmd:+5.1f} spd={speed_cmd:+4.2f} | "
                   f"enc L={fb.rpm_L:+5.1f} R={fb.rpm_R:+5.1f}",
                   end="", flush=True)

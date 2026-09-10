@@ -1,0 +1,46 @@
+Straight line (10m) — the simplest case
+
+Command:
+python3 -c "import waypoints as wp; wp.save_csv(wp.generate_straight_line(10.0), 'paths/straight_10m.csv')"
+The entire resulting file:
+x,y,speed_mps
+0.000,0.000,0.200
+1.000,0.000,0.200
+2.000,0.000,0.200
+...
+10.000,0.000,0.200
+That's it — 11 rows. x counts up from 0 to 10 in 1m steps (our locked-in straight-line spacing), y stays 0 the whole way (it's a straight line, no sideways movement), speed_mps is the target speed at each point (0.2 m/s, the placeholder cruise speed — flag if you want this changed). This file is the path — nothing more abstract than a list of points.
+
+Rectangle (8×6)
+
+python3 -c "import waypoints as wp; wp.save_csv(wp.generate_rectangle(8.0, 6.0), 'paths/rectangle_8x6.csv')"
+Same idea, walking the perimeter: (0,0) → (8,0) → (8,6) → (0,6) → back to (0,0), with points filled in every 1m along each edge (29 rows total).
+
+Circle (⌀6m)
+
+python3 -c "import waypoints as wp; wp.save_csv(wp.generate_circle(6.0), 'paths/circle_d6m.csv')"
+x,y,speed_mps
+0.000,0.000,0.200
+0.299,0.015,0.200
+0.594,0.059,0.200
+0.884,0.133,0.200
+...
+Here x and y both change every row — that's what makes it a curve instead of a line. It starts at (0,0) moving along +X, curves left (our ccw=True default), and after 64 points ends back at (0,0) — a closed loop.
+
+Lawnmower (4 rows of 6m)
+
+python3 -c "import waypoints as wp; wp.save_csv(wp.generate_lawnmower(6.0, 4), 'paths/lawnmower_6m_x4.csv')"
+Same idea, but it's rows + turns stitched together: drive 6m along +X, curve 180° (the 1.6m-wide turn we discussed), drive 6m back along -X one row over, curve again, etc. — 49 points total for 4 rows.
+
+
+
+
+
+
+
+
+
+
+, can we make 4 different python scripts for the 4 shapes, like when we call python3 script_name.py(name the script based on the shape creating) it will ask for
+  the dimesions like for straight line the length, for rectangle the length and breadth, for circle the diameter, for lawnmover the row length and number of rows. and save the files with
+  appropriate filename with that can match the mission.py with suffixes.
