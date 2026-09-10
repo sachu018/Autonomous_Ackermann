@@ -184,6 +184,16 @@ This document tracks mistakes encountered during the project evolution, how they
 
 ---
 
+### Mistake 11: Heading Reference Was Re-Locking on Every Mission Restart, Defeating the Point of "Compass-Referenced"
+- **What happened:** User asked a clarifying question about the (0,0)/heading semantics — asking it surfaced that `Odometry.reset()` (called by `mission.py` on every SWB MANUAL→AUTO rising edge) set `self._yaw_ref = None`, which makes `update()` re-capture whatever the IMU currently reads as the NEW zero-heading on every single mission start/restart.
+- **Why this was wrong:** the whole reason "compass-referenced" was chosen over "start-relative" (see the design discussion in architecture.md §3.9) was so a pattern keeps the same real-world orientation across repeated test runs in one session — e.g. running "straight line 10m" three times in a row should point the same real-world direction each time. Re-locking the heading reference on every restart made it functionally identical to "start-relative" (the option deliberately NOT chosen), since each restart got its own arbitrary +X direction based on whatever way the rover happened to be pointed at that exact moment.
+- **How it was found:** not caught by the standalone smoke test at the time it was written — that test only exercised a single continuous run, never called `reset()` mid-test with a changed heading, so it couldn't have caught this. Found only because the user asked to clarify the (0,0)-on-AUTO-engage behavior, prompting a re-read of the actual code against what was designed.
+- **How it was corrected:** decoupled position reset from heading-reference locking. `reset()` now only re-zeros `(x, y)`; the heading reference locks exactly once, on the first `update()` call ever made on that `Odometry` instance (effectively: whichever way the rover is pointed when `mission.py` is *launched*, not each time SWB flips to AUTO). Strengthened the smoke test to actually catch a regression of this: Check 2 calls `reset()`, changes the fake IMU's heading by 90°, and asserts `yaw` reports the real turn (~-90°) rather than silently re-zeroing — this specific test would have caught the original bug.
+- **Lesson:** a smoke test that only exercises the "happy path" of a single continuous run won't catch a state-reset bug that only manifests across multiple start/stop cycles — worth deliberately testing the *reset* behavior, not just the update behavior, for any stateful module like this one.
+- **Not yet re-verified on real hardware** (same caveat as every other calibration/behavior note) — verified only via the strengthened synthetic smoke test.
+
+---
+
 ### Note: Both Steering Potentiometers Replaced — Third Raw ADC Calibration
 - **What happened:** User replaced both steering potentiometers (not just the left one, as in the previous replacement — see "Left Potentiometer Replaced" note below) and provided freshly-measured raw ADC values directly (not via the ESP32 rig this time, values just given in conversation): full right `raw_L=3096, raw_R=2124`; full left `raw_L=5793, raw_R=4160`; center `raw_L=4426, raw_R=3167`.
 - **How it was found:** User-supplied, not independently measured or re-derived by re-running the ESP32 rig this session.

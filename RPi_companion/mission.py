@@ -16,10 +16,18 @@
 #     tracking before ever letting it actually drive.
 #   - Flipping SWB to AUTO engages it; flipping back to MANUAL instantly
 #     hands control back to the RC sticks, from anywhere in the mission.
-#   - A mission "starts" (odometry reset to (0,0), heading locked to
-#     whatever the rover is pointed at that instant) on the RISING EDGE of
-#     SWB going to AUTO — so backing out and re-arming AUTO restarts the
-#     mission fresh without restarting this script.
+#   - A mission "starts" (odometry POSITION reset to (0,0), current
+#     location becomes the path's origin) on the RISING EDGE of SWB going
+#     to AUTO — so backing out and re-arming AUTO restarts the mission
+#     fresh without restarting this script. The HEADING reference does
+#     NOT re-lock on this edge — it's captured exactly once, the first
+#     time this script gets a real IMU reading (effectively: whichever way
+#     the rover is pointed when you START this script). This is
+#     deliberate: it's what makes "compass-referenced" actually mean
+#     something across repeated test runs in one session, rather than
+#     each restart getting its own arbitrary +X direction — point the
+#     rover the way you want the pattern to face BEFORE launching this
+#     script, not before each individual AUTO engagement.
 #
 # Usage:
 #   python3 mission.py --pattern straight --length 10
@@ -164,7 +172,8 @@ def main():
 
             if fb.auto_active and not prev_auto_active:
                 print("\n[Mission] SWB -> AUTO. Starting/restarting mission "
-                      "(pose reset, heading locked to current orientation).")
+                      "(position reset to (0,0) here; heading reference "
+                      "unchanged from script start).")
                 odo.reset()
                 guidance = PurePursuit(path)
                 mission_announced_done = False
