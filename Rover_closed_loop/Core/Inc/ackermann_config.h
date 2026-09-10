@@ -70,18 +70,15 @@
 #define ADS1115_I2C_ADDR        0x48U   /* 7-bit. Shares I2C1 with DACs 0x60/0x61 */
 
 /* Raw 16-bit ADC values at the mechanical stops.
- * Calibrated on hardware via a standalone ESP32 + ADS1115 rig (same gain,
- * ±4.096V / GAIN_ONE, same AIN0=left/AIN1=right wiring as the STM32 build) —
- * see scratchpad.md for the calibration note.
- * Re-calibrated after the left potentiometer was replaced. ⚠️ Left span
- * (2187 counts) is 3.1x narrower than right (6778 counts) — much bigger gap
- * than the ~9% seen on the original pots; worth confirming the new pot's
- * value/wiring uses its full mechanical rotation before relying on this for
- * the long term. See scratchpad.md.                                        */
-#define ADC_L_MIN_RAW           1920    /* Left  pot @ full RIGHT lock       */
-#define ADC_L_MAX_RAW           3950    /* Left  pot @ full LEFT  lock       */
-#define ADC_R_MIN_RAW           5722    /* Right pot @ full RIGHT lock       */
-#define ADC_R_MAX_RAW           11000   /* Right pot @ full LEFT  lock       */
+ * Re-calibrated after BOTH potentiometers were replaced (see scratchpad.md).
+ * Spans are now well-balanced: L 4426-3096=1330 / 5793-4426=1367 (~3% split),
+ * R 3167-2124=1043 / 4160-3167=993 (~5% split) — a healthy result, unlike
+ * the earlier replacement's 3.1x L/R span mismatch this note used to warn
+ * about (that warning no longer applies to these pots).                    */
+#define ADC_L_MIN_RAW           3096    /* Left  pot @ full RIGHT lock       */
+#define ADC_L_MAX_RAW           5793    /* Left  pot @ full LEFT  lock       */
+#define ADC_R_MIN_RAW           2124    /* Right pot @ full RIGHT lock       */
+#define ADC_R_MAX_RAW           4160    /* Right pot @ full LEFT  lock       */
 
 /* Raw ADC value at true straight-ahead, per wheel. Used as the pivot point
  * of a 3-point (piecewise-linear) calibration: MIN_RAW->CENTER_RAW maps
@@ -96,8 +93,8 @@
  * +-MAX_STEER_ANGLE_DEG and center reads exactly 0, independent of how far
  * either lock's raw value is from center. If MIN/MAX/CENTER raw ever
  * changes again, all three must be re-measured together.                  */
-#define ADC_L_CENTER_RAW         3500
-#define ADC_R_CENTER_RAW         10000
+#define ADC_L_CENTER_RAW         4426
+#define ADC_R_CENTER_RAW         3167
 
 /* Reject obviously-bad readings (disconnected wiper floats or rails).      */
 #define ADC_SANITY_MIN          200
