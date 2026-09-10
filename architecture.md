@@ -224,7 +224,12 @@ Since curve spacing (0.3m) is narrower than `Ld` (0.8m) — the opposite relatio
 | `RPi_companion/odometry.py` | Dead-reckoning `Pose` estimator — fuses `imu.py` heading + STM32 encoder feedback |
 | `RPi_companion/guidance.py` | `PurePursuit` controller — `Pose` + path in, `(steer_target_deg, speed_target_ms)` out |
 
-**Status:** all three logic modules (`waypoints.py`, `odometry.py`, `guidance.py`) verified via standalone smoke tests on this dev laptop (no hardware needed for any of them). **Not yet deployed to the RPi** (network connectivity to the Pi was down when this was built) and **no `mission.py` yet** tying them together with `uart_link.py` into an actual running autonomous loop.
+**Status:** `mission.py` now built — the runnable entry point tying `waypoints.py`/`odometry.py`/`guidance.py`/`uart_link.py`/`imu.py` together (CLI: `--pattern straight/rectangle/circle/lawnmower` with shape args, or `--csv <file>`; per-run CSV logging; mission (re)starts on SWB's MANUAL→AUTO rising edge, so aborting and re-arming restarts fresh without restarting the script). Verified failing cleanly off-hardware on this laptop (IMU stub warning, then a clean abort when the UART port doesn't exist — no crash/traceback). **Still not deployed to the RPi or run on real hardware** — the Pi has been unreachable from this laptop (different network subnet) since this work started; deploy via `rsync` once reachable, then work through `Documentations/Rover_study.md` §14-adjacent field-test procedure (steps 1–6 as: connectivity check → IMU check → dry-run with SWB=MANUAL, watching printed pose/command output → straight-line field test → other patterns).
+
+**User-confirmed, open items:**
+- 1.6m effective lawnmower turn spacing (vs. the nominal 1.0m row spacing) — **accepted**, not a blocker.
+- `MAX_STEER_ANGLE_DEG=45°` mirrored into `rover_config.py` is the STM32's *reference/design* value, not yet a verified true mechanical limit — a steering potentiometer is due to be replaced and recalibrated (user's own words: "the angles of turn at front wheel is not 45 degree... the actual angle can be found by using the raw adc values"). **STM32 firmware must not be touched** until that recalibration happens — explicit user instruction. Once recalibrated, update `MIN_TURN_RADIUS_M`'s input (`MAX_STEER_ANGLE_DEG`) in `rover_config.py` to match whatever the real verified value turns out to be.
+- Cruise speed (`CRUISE_SPEED_MPS=0.2`) — still an unconfirmed placeholder.
 
 ---
 

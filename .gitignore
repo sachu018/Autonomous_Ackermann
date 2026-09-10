@@ -5,6 +5,11 @@ Rover_closed_loop/Debug/
 __pycache__/
 *.pyc
 
+# Per-run mission logs (RPi_companion/mission.py) — regenerated every test
+# run, not source. Unlike Old_files/'s historical logs (kept deliberately),
+# these accumulate indefinitely; copy specific ones in if worth keeping.
+RPi_companion/logs/
+
 # Editor/OS cruft
 .DS_Store
 *.swp
