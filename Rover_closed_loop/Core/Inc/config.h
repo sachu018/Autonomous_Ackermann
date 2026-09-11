@@ -8,9 +8,9 @@
 #define WMAX_RADS               1.22f
 
 /* ── Motor / Gearbox ────────────────────────────────────────────────────────── */
-#define MOTOR_RPM_MAX           400.0f
+#define MOTOR_RPM_MAX           500.0f  /* field-measured true max, was 400 (datasheet) */
 #define GEAR_RATIO              20.0f
-#define WHEEL_RPM_MAX           (MOTOR_RPM_MAX / GEAR_RATIO)  /* 20.0 RPM */
+#define WHEEL_RPM_MAX           (MOTOR_RPM_MAX / GEAR_RATIO)  /* 25.0 RPM */
 
 /* ── Encoder ────────────────────────────────────────────────────────────────── */
 #define ENCODER_PPR             600U

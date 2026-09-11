@@ -290,6 +290,8 @@ A follow-up empirical analysis (pooling real `(DAC, measured RPM)` pairs across 
 
 **Not yet rebuilt, reflashed, or retested on hardware.** Source change only, in `Rover_closed_loop/`.
 
+**Follow-up: `WHEEL_RPM_MAX` raised 20→25.** User field-measured the wheels actually reach 25 RPM, above the 20 RPM ceiling the firmware had been using (`WHEEL_RPM_MAX = MOTOR_RPM_MAX/GEAR_RATIO`, `400/20`). `MOTOR_RPM_MAX` raised `400→500` in `config.h` (the datasheet figure vs. the real measured max — `GEAR_RATIO` is a fixed mechanical spec, untouched), so `WHEEL_RPM_MAX` derives to 25.0 everywhere it's used, including `Ackermann_ComputeRPM()`'s forward RPM ceiling. Not yet rebuilt/reflashed/retested.
+
 ---
 
 ## 4. Version Control
