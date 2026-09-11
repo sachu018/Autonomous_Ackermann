@@ -112,25 +112,37 @@
 #define ACTUATOR_DIR            ( 1)
 
 /* ── Rear-wheel throttle mapping (stiction compensated) ─────────────────── */
-/* Field-measured (standing start, commanded RPM at the moment the wheels
- * first overcome static friction and actually turn): 3.5 RPM. Run through
- * _ToThrottle()'s existing linear map (THR_FWD_MIN_DAC at 0 RPM, DAC_MAX at
- * WHEEL_RPM_MAX) to find the DAC that command was actually producing:
- *   1100 + (3.5 / 20) * (4095 - 1100) = 1624
- * The old value (1100) was a guess set below the true breakaway point, so
- * any commanded RPM under ~3.5 fell in a dead zone — DAC 1100-1624 that
- * looked like "commanding a slow crawl" but produced no real motion at
- * all. Raised to 1624 so the floor actually matches where the wheels
- * really start moving. See scratchpad.md — this was diagnosed from field
- * autonomous-mission logs showing measured wheel speed running ~2.8-3.2x
- * the RPi's commanded speed, worst at low commanded speeds (consistent
- * with commands landing in this dead zone). Not yet confirmed whether
- * this alone fully accounts for that ratio, or whether the SLOPE of this
- * same linear map also needs revisiting — flagged for a re-test. */
-#define THR_FWD_MIN_DAC         1624U   /* forward stiction threshold        */
+/* FORWARD driving now uses a closed-loop PI (wheel_pid.c) instead of an
+ * open-loop RPM->DAC guess — see that file's header comment for why. Two
+ * things were tried and abandoned before landing on this:
+ *   1. THR_FWD_MIN_DAC was briefly raised to 1624 (computed from a
+ *      field-measured 3.5 RPM breakaway point run through the OLD open-loop
+ *      formula), on the theory that the floor alone explained a ~2.8-3.2x
+ *      actual-vs-commanded speed mismatch. That made the ratio WORSE
+ *      (3.4-5.5x) — raising the floor while holding the far endpoint
+ *      (WHEEL_RPM_MAX -> DAC_MAX) fixed lifts the WHOLE line, not just the
+ *      low end.
+ *   2. Pooling real (DAC, measured RPM) pairs from field logs showed the
+ *      real relationship reaches WHEEL_RPM_MAX (20) at DAC~2171 (53% duty),
+ *      not DAC_MAX — a genuine SLOPE error, not just a floor error, and the
+ *      curve isn't perfectly linear either. A two-point linear re-fit was
+ *      considered, but a static curve of any shape can't track terrain/
+ *      incline/load changes in the field the way a closed loop can.
+ * THR_FWD_MIN_DAC now only needs to be a REASONABLE STARTING FLOOR the PI's
+ * integral term corrects away from — reverted to 1100 (close to what the
+ * field data implies the true breakaway point actually is, ~1162). See
+ * scratchpad.md for the full trail. */
+#define THR_FWD_MIN_DAC         1100U   /* forward PI starting floor (not precision-critical) */
 #define THR_REV_MIN_DAC         1810U   /* reverse stiction (~2.21 V)        */
 #define THR_REV_MAX_DAC         2450U   /* reverse ceiling                   */
 #define THR_REV_RPM_CAP         10.0f   /* reverse speed cap (wheel RPM)     */
+
+/* ── Forward wheel-speed PI (wheel_pid.c) — gains carried over directly from
+ * Old_files/dev_bak/ugv_pid_waypoint.py's BBBHardware, same drivetrain. */
+#define KP_WHEEL                50.0f
+#define KI_WHEEL                15.0f
+#define WHEEL_PID_MAX_INTEGRAL  150.0f   /* clamp on the raw integral accumulator */
+#define WHEEL_PID_MIN_CORRECTION (-250.0f) /* lets DAC dip below the floor if overspeeding */
 
 /* Max reverse linear velocity derived from RPM cap and wheel geometry       */
 #define VMAX_REV_MS             ((THR_REV_RPM_CAP / 60.0f) * (2.0f * (float)M_PI * WHEEL_RADIUS_M))

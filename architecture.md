@@ -270,6 +270,26 @@ Discussion of 5 further field logs (3 rough/diverging, including one manually-ab
 
 **⚠️ Likely a partial fix, flagged explicitly:** the ratio only mildly improved with higher commanded speed (3.18× → 2.80× from 0.06→0.12 m/s) rather than dropping toward 1.0× — if this were purely a dead-zone issue, it should shrink much faster once comfortably past the breakaway point. A roughly-constant ~2.8× component even well above the breakaway speed suggests the *slope* of the same linear map (not just its floor) may also be miscalibrated — e.g. `WHEEL_RPM_MAX=20` might not be the true achievable max wheel RPM. User has offered to re-test after this change; comparing the re-test's ratio-vs-speed curve against this session's will show whether the floor fix alone closes the gap.
 
+**Superseded — see §3.12.** The re-test showed the floor-raise made things *worse*, and a full empirical analysis found the real problem was the map's slope, not its floor. Rather than curve-fit a second open-loop map, the whole open-loop approach was replaced with closed-loop control for forward driving.
+
+### 3.12 Open-Loop Throttle Mapping Replaced With Closed-Loop PI (Forward Only)
+
+The §3.11 floor-raise (`THR_FWD_MIN_DAC` 1100→1624) was field-retested and made the actual/commanded speed ratio *worse* (3.4–5.5× vs the original 2.8–3.2×) — raising the floor while holding the far endpoint (`WHEEL_RPM_MAX→DAC_MAX`) fixed lifts the *entire* line, not just the low end, so every commanded RPM got over-mapped, not just near-zero ones. This was owned as a mistake mid-session (see scratchpad.md).
+
+A follow-up empirical analysis (pooling real `(DAC, measured RPM)` pairs across all 7 field logs, 12,724 points, linear regression) showed the real relationship reaches `WHEEL_RPM_MAX` (20) at only DAC≈2171 (53% duty), not `DAC_MAX` — a genuine *slope* error, and the curve isn't perfectly linear either. A two-point re-fit was drafted but not applied.
+
+**User's counter-proposal, adopted instead:** stop trying to curve-fit a static open-loop DAC map at all. Command wheel RPM directly and let a closed-loop PI (fed by the same encoder RPM already read every tick) compute the DAC, exactly like the BBB-era rover already did successfully on this same drivetrain (`Old_files/dev_bak/ugv_pid_waypoint.py`'s `BBBHardware`, `Kp=50, Ki=15`). This also naturally compensates for terrain/incline/traction changes in the field, which a static curve fundamentally cannot — directly answering the user's field observation about uneven paths and low-traction sections.
+
+**Scope: forward driving only, explicit user decision** ("forward only"). Reverse driving is untouched — still the original open-loop `_ToThrottle()` with `THR_REV_MIN_DAC`/`THR_REV_MAX_DAC`.
+
+**Implementation:**
+- New `wheel_pid.c/h` — a `WheelPID_t` per wheel (`kp`, `ki`, `integral`), structurally identical to `steer_pid.h`'s `Init`/`Reset`/`Update` shape. `WheelPID_Update()` takes `(target_rpm, measured_rpm, dt_s)`, returns a DAC value: `error*kp + integral*ki` is clamped to `[WHEEL_PID_MIN_CORRECTION, DAC_MAX-THR_FWD_MIN_DAC]` and added on top of `THR_FWD_MIN_DAC` (now just a reasonable starting floor, not precision-critical — the integral term corrects away from it), then the final DAC is clamped to `[0, DAC_MAX]`. Gains `KP_WHEEL=50.0`, `KI_WHEEL=15.0` carried directly from the BBB code (same motors/gearbox/DAC hardware).
+- `ackermann.c`: `_ToThrottle()` re-scoped to reverse-only (forward branch left as commented dead code, for reference). New `_ToThrottleClosedLoop(pid, target_rpm, measured_rpm, dt_s)` wraps `WheelPID_Update()` (returns 0 and resets the PID if target is ~0, to avoid integral windup while stopped). New `_BrakeThrottle(pid_L, pid_R)` resets both PIDs — called from every branch that used to zero the DAC directly without going through the throttle mapping (pivot-not-yet-locked, neutral-sticks-brake, `Ackermann_RunAuto`'s speed-deadband branch), so a stale integral term from the previous driving segment can't kick the wheels when driving resumes.
+- `Ackermann_Run()` and `Ackermann_RunAuto()` both gained `meas_rpm_L, meas_rpm_R, dt_s, WheelPID_t *pid_L, WheelPID_t *pid_R` parameters. Every FORWARD throttle computation (pivot drive, normal forward driving, `RunAuto`'s forward branch) now calls `_ToThrottleClosedLoop()`; every REVERSE throttle computation is unchanged (`_ToThrottle(rpm, 1U)`).
+- `main.c`: added static `wheel_pid_L`/`wheel_pid_R`, initialized alongside `steer_pid` in `USER CODE BEGIN 2`, fed `Encoder_GetRPM_L()/R()` and the loop's `dt_s` at both `Ackermann_Run`/`Ackermann_RunAuto` call sites. Also reset both PIDs in the disarmed/no-signal branch and the AUTO-selected-but-link-down branch (belt-and-suspenders — those paths bypass `ackermann.c` entirely and set `ack` fields directly).
+
+**Not yet rebuilt, reflashed, or retested on hardware.** Source change only, in `Rover_closed_loop/`.
+
 ---
 
 ## 4. Version Control

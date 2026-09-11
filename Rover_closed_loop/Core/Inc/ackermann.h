@@ -7,6 +7,7 @@
 #define ACKERMANN_H
 
 #include <stdint.h>
+#include "wheel_pid.h"
 
 typedef enum {
     ACK_STATE_BRAKE = 0,
@@ -36,11 +37,22 @@ typedef struct {
 void Ackermann_ComputeRPM(float V_base, float delta_actual_deg, uint8_t is_reverse,
                           float *rpm_L, float *rpm_R);
 
-/* Full Ackermann motion pipeline for one control cycle */
+/* Full Ackermann motion pipeline for one control cycle.
+ *
+ * meas_rpm_L/R + pid_L/R: FORWARD driving closes the throttle loop on real
+ * encoder feedback (wheel_pid.c) instead of an open-loop DAC guess — see
+ * ackermann_config.h's THR_FWD_MIN_DAC comment for why. meas_rpm_L/R should
+ * be the current Encoder_GetRPM_L()/R() reading (previous tick's value,
+ * completely normal for a discrete control loop); pid_L/pid_R are owned by
+ * the caller (main.c, like steer_pid is) so their integral state persists
+ * across calls. REVERSE driving is unaffected — still the original
+ * open-loop _ToThrottle() path. */
 void Ackermann_Run(float Xn, float Yn,
                    float fwd_pct, float rev_pct,
                    float delta_actual_deg,
                    uint8_t rc_ok,
+                   float meas_rpm_L, float meas_rpm_R, float dt_s,
+                   WheelPID_t *pid_L, WheelPID_t *pid_R,
                    AckResult_t *out);
 
 /* Autonomous motion pipeline (Phase 5 — RPi UART link): the RPi supplies an
@@ -48,9 +60,13 @@ void Ackermann_Run(float Xn, float Yn,
  * instead of joystick Xn/Yn — bypasses the stick deadband/curve shaping in
  * Ackermann_Run() entirely, since these targets are not from a human hand.
  * The electronic differential still runs off the MEASURED steering angle,
- * exactly as in manual mode — only the target source differs. */
+ * exactly as in manual mode — only the target source differs.
+ * meas_rpm_L/R, dt_s, pid_L/pid_R: same closed-loop forward throttle as
+ * Ackermann_Run() above — see its comment. */
 void Ackermann_RunAuto(float steer_target_deg, float speed_target_ms,
                        float delta_actual_deg,
+                       float meas_rpm_L, float meas_rpm_R, float dt_s,
+                       WheelPID_t *pid_L, WheelPID_t *pid_R,
                        AckResult_t *out);
 
 #endif /* ACKERMANN_H */

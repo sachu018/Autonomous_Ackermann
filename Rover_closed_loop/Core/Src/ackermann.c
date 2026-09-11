@@ -9,7 +9,7 @@
 #include <math.h>
 #include <stdint.h>
 
-/* ── Throttle mapping (stiction compensated) ────────────────────────────── */
+/* ── Throttle mapping — REVERSE only (still open-loop, unchanged) ───────── */
 static uint16_t _ToThrottle(float rpm, uint8_t is_reverse)
 {
     float abs_rpm = fabsf(rpm);
@@ -27,6 +27,11 @@ static uint16_t _ToThrottle(float rpm, uint8_t is_reverse)
     }
     else
     {
+        /* FORWARD no longer goes through here — see _ToThrottleClosedLoop()
+         * below. This branch is dead for forward (nothing calls it with
+         * is_reverse=0 anymore) but left in place rather than deleted, in
+         * case reverse ever needs the same closed-loop treatment later —
+         * see wheel_pid.h's header comment on that scope decision. */
         uint32_t val = THR_FWD_MIN_DAC +
                        (uint32_t)((abs_rpm / WHEEL_RPM_MAX) *
                                   (float)(DAC_MAX - THR_FWD_MIN_DAC));
@@ -34,6 +39,36 @@ static uint16_t _ToThrottle(float rpm, uint8_t is_reverse)
         if (val > DAC_MAX)         val = DAC_MAX;
         return (uint16_t)val;
     }
+}
+
+/* ── Throttle mapping — FORWARD only (closed-loop, wheel_pid.c) ─────────── */
+/* target_rpm may be signed (this project's convention throughout) — only
+ * the magnitude matters here, direction is motor.c's job. Below 0.01 RPM,
+ * bypasses the PI entirely: forces DAC=0 AND resets the integral, so a
+ * stale correction from the last driving segment can't cause an unwanted
+ * kick next time this wheel is asked to move (mirrors the BBB's exact
+ * `if target<0.01: dac=0, pid.reset()` pattern). */
+static uint16_t _ToThrottleClosedLoop(WheelPID_t *pid, float target_rpm,
+                                      float measured_rpm, float dt_s)
+{
+    float target_abs = fabsf(target_rpm);
+    if (target_abs < 0.01f)
+    {
+        WheelPID_Reset(pid);
+        return 0U;
+    }
+    return WheelPID_Update(pid, target_abs, fabsf(measured_rpm), dt_s);
+}
+
+/* Stops both wheels AND resets both PI integrals — use this (not just
+ * leaving dac_L/dac_R at 0) at every point Ackermann_Run()/RunAuto() decide
+ * to brake/hold without calling _ToThrottleClosedLoop(), so the reset above
+ * still happens even on branches that never touch the PI at all (neutral
+ * sticks, pivot-not-yet-locked, AUTO speed deadband). */
+static void _BrakeThrottle(WheelPID_t *pid_L, WheelPID_t *pid_R)
+{
+    WheelPID_Reset(pid_L);
+    WheelPID_Reset(pid_R);
 }
 
 /* ── Electronic differential ────────────────────────────────────────────── */
@@ -87,6 +122,8 @@ void Ackermann_Run(float Xn, float Yn,
                    float fwd_pct, float rev_pct,
                    float delta_actual_deg,
                    uint8_t rc_ok,
+                   float meas_rpm_L, float meas_rpm_R, float dt_s,
+                   WheelPID_t *pid_L, WheelPID_t *pid_R,
                    AckResult_t *out)
 {
     /* Safe default output */
@@ -129,8 +166,8 @@ void Ackermann_Run(float Xn, float Yn,
                 /* Pivot Left: Inner Left wheel crawls, Outer Right wheel drives faster */
                 out->rpm_L = PIVOT_INNER_RPM;
                 out->rpm_R = PIVOT_OUTER_RPM;
-                out->dac_L = _ToThrottle(out->rpm_L, 0U);
-                out->dac_R = _ToThrottle(out->rpm_R, 0U);
+                out->dac_L = _ToThrottleClosedLoop(pid_L, out->rpm_L, meas_rpm_L, dt_s);
+                out->dac_R = _ToThrottleClosedLoop(pid_R, out->rpm_R, meas_rpm_R, dt_s);
                 out->state = ACK_STATE_PIVOT_LEFT;
             }
             else
@@ -138,13 +175,14 @@ void Ackermann_Run(float Xn, float Yn,
                 /* Pivot Right: Inner Right wheel crawls, Outer Left wheel drives faster */
                 out->rpm_L = PIVOT_OUTER_RPM;
                 out->rpm_R = PIVOT_INNER_RPM;
-                out->dac_L = _ToThrottle(out->rpm_L, 0U);
-                out->dac_R = _ToThrottle(out->rpm_R, 0U);
+                out->dac_L = _ToThrottleClosedLoop(pid_L, out->rpm_L, meas_rpm_L, dt_s);
+                out->dac_R = _ToThrottleClosedLoop(pid_R, out->rpm_R, meas_rpm_R, dt_s);
                 out->state = ACK_STATE_PIVOT_RIGHT;
             }
         }
         else
         {
+            _BrakeThrottle(pid_L, pid_R);
             out->V_base = 0.0f;
             out->rpm_L  = 0.0f;
             out->rpm_R  = 0.0f;
@@ -158,6 +196,7 @@ void Ackermann_Run(float Xn, float Yn,
     /* ── Neutral sticks -> brake ───────────────────────────────────────── */
     if (abs_y < ACK_STICK_DEADBAND && abs_x < ACK_STICK_DEADBAND)
     {
+        _BrakeThrottle(pid_L, pid_R);
         out->state = ACK_STATE_BRAKE;
         return;
     }
@@ -176,8 +215,16 @@ void Ackermann_Run(float Xn, float Yn,
     Ackermann_ComputeRPM(out->V_base, delta_actual_deg, (uint8_t)(!going_fwd),
                          &out->rpm_L, &out->rpm_R);
 
-    out->dac_L = _ToThrottle(out->rpm_L, (uint8_t)(!going_fwd));
-    out->dac_R = _ToThrottle(out->rpm_R, (uint8_t)(!going_fwd));
+    if (going_fwd)
+    {
+        out->dac_L = _ToThrottleClosedLoop(pid_L, out->rpm_L, meas_rpm_L, dt_s);
+        out->dac_R = _ToThrottleClosedLoop(pid_R, out->rpm_R, meas_rpm_R, dt_s);
+    }
+    else
+    {
+        out->dac_L = _ToThrottle(out->rpm_L, 1U);
+        out->dac_R = _ToThrottle(out->rpm_R, 1U);
+    }
 
     /* State classification based on measured wheel orientation */
     if (going_fwd)
@@ -198,6 +245,8 @@ void Ackermann_Run(float Xn, float Yn,
 
 void Ackermann_RunAuto(float steer_target_deg, float speed_target_ms,
                        float delta_actual_deg,
+                       float meas_rpm_L, float meas_rpm_R, float dt_s,
+                       WheelPID_t *pid_L, WheelPID_t *pid_R,
                        AckResult_t *out)
 {
     /* Clamp to the physical steering limits — unlike Xn this is not already
@@ -209,6 +258,7 @@ void Ackermann_RunAuto(float steer_target_deg, float speed_target_ms,
 
     if (fabsf(speed_target_ms) < AUTO_SPEED_DEADBAND_MS)
     {
+        _BrakeThrottle(pid_L, pid_R);
         out->state  = ACK_STATE_BRAKE;
         out->V_base = 0.0f;
         out->rpm_L  = 0.0f;
@@ -228,8 +278,16 @@ void Ackermann_RunAuto(float steer_target_deg, float speed_target_ms,
     Ackermann_ComputeRPM(out->V_base, delta_actual_deg, (uint8_t)(!going_fwd),
                          &out->rpm_L, &out->rpm_R);
 
-    out->dac_L = _ToThrottle(out->rpm_L, (uint8_t)(!going_fwd));
-    out->dac_R = _ToThrottle(out->rpm_R, (uint8_t)(!going_fwd));
+    if (going_fwd)
+    {
+        out->dac_L = _ToThrottleClosedLoop(pid_L, out->rpm_L, meas_rpm_L, dt_s);
+        out->dac_R = _ToThrottleClosedLoop(pid_R, out->rpm_R, meas_rpm_R, dt_s);
+    }
+    else
+    {
+        out->dac_L = _ToThrottle(out->rpm_L, 1U);
+        out->dac_R = _ToThrottle(out->rpm_R, 1U);
+    }
 
     /* State classification based on measured wheel orientation — same
      * thresholds as Ackermann_Run()'s normal-driving branch. */

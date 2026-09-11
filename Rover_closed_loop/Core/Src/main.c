@@ -41,6 +41,7 @@
 #include "ads1115.h"
 #include "actuator.h"
 #include "steer_pid.h"
+#include "wheel_pid.h"
 #include "ackermann.h"
 #include <math.h>
 #include <stdio.h>
@@ -72,6 +73,9 @@ static uint32_t     last_contactor_ts = 0U;
 static SteerPID_t   steer_pid;
 static SteerAngles_t steer;
 static uint32_t     prev_loop_ts      = 0U;
+
+/* Closed-loop forward wheel-speed state (wheel_pid.c) — see ackermann.h */
+static WheelPID_t   wheel_pid_L, wheel_pid_R;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -240,6 +244,8 @@ int main(void)
   ADS1115_Init();
   Actuator_Init();
   SteerPID_Init(&steer_pid, KP_STEER, KI_STEER, KD_STEER);
+  WheelPID_Init(&wheel_pid_L, KP_WHEEL, KI_WHEEL);
+  WheelPID_Init(&wheel_pid_R, KP_WHEEL, KI_WHEEL);
   Motor_Energize();               /* auto-arm on boot, contactor click = system ready */
   last_contactor_ts = TIM5->CNT; /* debounce timer starts from this moment */
   prev_loop_ts      = TIM5->CNT;
@@ -302,10 +308,14 @@ int main(void)
             if (rpi_cmd.link_ok)
             {
                 Ackermann_RunAuto(rpi_cmd.steer_target_deg, rpi_cmd.speed_target_ms,
-                                  steer.delta, &ack);
+                                  steer.delta,
+                                  Encoder_GetRPM_L(), Encoder_GetRPM_R(), dt_s,
+                                  &wheel_pid_L, &wheel_pid_R, &ack);
             }
             else
             {
+                WheelPID_Reset(&wheel_pid_L);
+                WheelPID_Reset(&wheel_pid_R);
                 ack.state            = ACK_STATE_BRAKE;
                 ack.target_steer_deg = 0.0f;
                 ack.V_base            = 0.0f;
@@ -319,11 +329,15 @@ int main(void)
         {
             Ackermann_Run(rc.Xn, rc.Yn,
                           rc.fwd_speed_pct, rc.rev_speed_pct,
-                          steer.delta, rc.rc_ok, &ack);
+                          steer.delta, rc.rc_ok,
+                          Encoder_GetRPM_L(), Encoder_GetRPM_R(), dt_s,
+                          &wheel_pid_L, &wheel_pid_R, &ack);
         }
     }
     else
     {
+        WheelPID_Reset(&wheel_pid_L);
+        WheelPID_Reset(&wheel_pid_R);
         ack.state            = Motor_IsArmed() ? ACK_STATE_NO_SIGNAL : ACK_STATE_DISARMED;
         ack.target_steer_deg = 0.0f;
         ack.rpm_L            = 0.0f;
