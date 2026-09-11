@@ -255,10 +255,20 @@ Speed = `target_speed × min(alpha_factor, cte_factor)` — the worse of the two
 
 **Not yet re-tested on hardware** — both fixes verified via smoke tests (including exact real-scenario replays) and by replaying the real bad run's trajectory through the new code, but no new AUTO field run has happened since.
 
-**User-confirmed, open items:**
+**User-confirmed, open items (updated):**
 - 1.6m effective lawnmower turn spacing (vs. the nominal 1.0m row spacing) — **accepted**, not a blocker.
-- `MAX_STEER_ANGLE_DEG=45°` mirrored into `rover_config.py` is the STM32's *reference/design* value, not yet a verified true mechanical limit — a steering potentiometer is due to be replaced and recalibrated (user's own words: "the angles of turn at front wheel is not 45 degree... the actual angle can be found by using the raw adc values"). **STM32 firmware must not be touched** until that recalibration happens — explicit user instruction. Once recalibrated, update `MIN_TURN_RADIUS_M`'s input (`MAX_STEER_ANGLE_DEG`) in `rover_config.py` to match whatever the real verified value turns out to be.
-- Cruise speed (`CRUISE_SPEED_MPS=0.2`) — still an unconfirmed placeholder.
+- `MAX_STEER_ANGLE_DEG=45°` — still the STM32's reference/design value, no protractor-verified true mechanical limit supplied yet (the steering pot replacement/recalibration that was pending is done — see §3.9's history — but that gave raw-ADC calibration, not a measured lock angle).
+- Cruise speed: resolved — **0.12 m/s** (§3.10), though see §3.11 below for a deeper calibration issue found since.
+
+### 3.11 Actual-vs-Commanded Speed Mismatch (~2.8-3.2×) — Root Cause Found, Partial Fix Applied
+
+Discussion of 5 further field logs (3 rough/diverging, including one manually-aborted runaway; 2 clean finishes) surfaced a bigger issue than tuning: **measured wheel speed (from encoder RPM) ran 2.8-3.2× the RPi's commanded speed, consistently, across every run** — worse at low commanded speed (3.18× at the 0.06 m/s floor) than at cruise (2.80× at 0.12 m/s).
+
+**Root cause, confirmed with a field-measured data point:** `_ToThrottle()` in `ackermann.c` linearly maps `(0 RPM → THR_FWD_MIN_DAC)` to `(WHEEL_RPM_MAX=20 → DAC_MAX=4095)`. User measured (standing start, commanded RPM) that the wheels only overcome static friction at **3.5 RPM commanded** — which the *old* `THR_FWD_MIN_DAC=1100` formula maps to DAC≈1624, not 1100. Every commanded RPM between 0 and ~3.5 was landing in a dead zone (DAC 1100–1624) that looked like a valid slow-crawl command but produced zero real motion.
+
+**Fix applied:** `THR_FWD_MIN_DAC` raised `1100 → 1624` in `ackermann_config.h` (full derivation in a comment there). **Source change only — not yet rebuilt or reflashed.**
+
+**⚠️ Likely a partial fix, flagged explicitly:** the ratio only mildly improved with higher commanded speed (3.18× → 2.80× from 0.06→0.12 m/s) rather than dropping toward 1.0× — if this were purely a dead-zone issue, it should shrink much faster once comfortably past the breakaway point. A roughly-constant ~2.8× component even well above the breakaway speed suggests the *slope* of the same linear map (not just its floor) may also be miscalibrated — e.g. `WHEEL_RPM_MAX=20` might not be the true achievable max wheel RPM. User has offered to re-test after this change; comparing the re-test's ratio-vs-speed curve against this session's will show whether the floor fix alone closes the gap.
 
 ---
 

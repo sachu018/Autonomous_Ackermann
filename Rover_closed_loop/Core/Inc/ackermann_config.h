@@ -112,7 +112,22 @@
 #define ACTUATOR_DIR            ( 1)
 
 /* ── Rear-wheel throttle mapping (stiction compensated) ─────────────────── */
-#define THR_FWD_MIN_DAC         1100U   /* forward stiction threshold        */
+/* Field-measured (standing start, commanded RPM at the moment the wheels
+ * first overcome static friction and actually turn): 3.5 RPM. Run through
+ * _ToThrottle()'s existing linear map (THR_FWD_MIN_DAC at 0 RPM, DAC_MAX at
+ * WHEEL_RPM_MAX) to find the DAC that command was actually producing:
+ *   1100 + (3.5 / 20) * (4095 - 1100) = 1624
+ * The old value (1100) was a guess set below the true breakaway point, so
+ * any commanded RPM under ~3.5 fell in a dead zone — DAC 1100-1624 that
+ * looked like "commanding a slow crawl" but produced no real motion at
+ * all. Raised to 1624 so the floor actually matches where the wheels
+ * really start moving. See scratchpad.md — this was diagnosed from field
+ * autonomous-mission logs showing measured wheel speed running ~2.8-3.2x
+ * the RPi's commanded speed, worst at low commanded speeds (consistent
+ * with commands landing in this dead zone). Not yet confirmed whether
+ * this alone fully accounts for that ratio, or whether the SLOPE of this
+ * same linear map also needs revisiting — flagged for a re-test. */
+#define THR_FWD_MIN_DAC         1624U   /* forward stiction threshold        */
 #define THR_REV_MIN_DAC         1810U   /* reverse stiction (~2.21 V)        */
 #define THR_REV_MAX_DAC         2450U   /* reverse ceiling                   */
 #define THR_REV_RPM_CAP         10.0f   /* reverse speed cap (wheel RPM)     */
