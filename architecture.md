@@ -226,7 +226,34 @@ Since curve spacing (0.3m) is narrower than `Ld` (0.8m) — the opposite relatio
 | `RPi_companion/path_prompts.py` | Shared `input()` helper (float/int prompts with retry-on-bad-input) for the `make_*_path.py` scripts — not a program on its own |
 | `RPi_companion/make_straight_path.py`, `make_rectangle_path.py`, `make_circle_path.py`, `make_lawnmower_path.py` | Interactive path generators — prompt for that shape's dimensions, save to `paths/<shape>_<dims>.csv`, print the exact `mission.py --csv ...` command to run it. One CSV-generation concern each, thin wrappers over `waypoints.py` |
 
-**Status:** `mission.py` built and **now deployed to and run on the real RPi** — first-ever real-hardware run (real IMU + real STM32 link, SWB left in MANUAL for safety) surfaced and led to fixing a genuine Pure Pursuit bug (lookahead search skipping the path's first segment — see scratchpad.md Mistake 12 / works.md row 34). Every run now auto-archives both the path used and a 31-column telemetry log (pose, commands, full Pure Pursuit diagnostics including cross-track error, full raw IMU, full STM32 feedback) to `~/RPi_companion/logs/` on the Pi, sharing one timestamp per run for easy pairing when plotting. **Still not driven with SWB=AUTO** — every run so far has been a dry run (SWB=MANUAL, commands computed and logged but not acted on by the STM32). Next step is an actual AUTO-engaged straight-line test.
+**Status:** `mission.py` built, deployed, and **now driven under SWB=AUTO for the first time** — two real straight-line field tests (`mission_20260911_113236`, `_114042`). Every run auto-archives both the path used and a 31-column telemetry log to `~/RPi_companion/logs/` — this logging is what made the following diagnosis possible at all.
+
+### 3.10 First AUTO Field Test — Diverged, Root-Caused, Two Fixes Applied
+
+**Symptom** (user's report): "initially it went straight later turning." Both runs tracked well for the first ~10-12m, then spiraled into a growing steering oscillation — run 1 swung through ~50° of real heading change before happening to re-approach the final waypoint and finish; run 2 diverged further (reached yaw ≈ -156°, essentially backward) before the log ends. Full analysis in scratchpad.md (Mistakes 13/14); summary:
+
+| Cause | Detail | Fix |
+|---|---|---|
+| **Bug 1 — lookahead search regression** | The "search one segment behind the cursor" logic added to fix the mission-start bug (§3.9) returned the FIRST valid Ld-circle intersection, not the furthest-along one. Near a waypoint-advance boundary, the behind-segment can have its own valid but BACKWARD intersection — hand-verified on a captured glitch: behind-segment gave path-progress 6.02, the correct forward segment gave 7.57. Caused two single-tick spikes (`alpha` briefly hitting -172°/-159°) per run. | `_find_lookahead_point()` now scans every candidate segment and keeps whichever has the greatest cumulative path progress. Regression-tested by replaying the exact captured scenario. |
+| **Bug 2 — actuator lag vs. controller's implicit fast-response assumption** | The linear actuator moves at a fixed slow rate (~7mm/s bang-bang, no proportional speed). Pure Pursuit recomputes a full-authority target every 50ms with no model of how fast the actuator can move. Logged: `steer_cmd=-34.0°` while the *actual measured* steering angle was only `-9.7°` at the same tick — a chronic, large lag. Since the rear differential drives off the *actual* (lagging) angle, the rover kept following an old heading while the controller — seeing the resulting position error — demanded ever-larger corrections. **A genuine control-loop instability, not a simple mistuning.** | Not directly fixed — see below. |
+
+**User's own diagnosis was the right call:** "if the error is increasing, the speed should reduce" is a legitimate, well-targeted mitigation for Bug 2 specifically — less distance covered per second gives the slow actuator more real time to catch up per meter of required heading change. While implementing it, found the speed law was **barely responsive at all**: it reused `YAW_BOUND_DEG` (25°, meant only for smoothing the *steering* law) as its own error input, and `cos(25°)=0.906` capped any possible speed reduction at ~9% — explaining why logged speed stayed ~0.18–0.20 m/s almost the entire time, even while `alpha` hit 157°.
+
+**Speed law rebuilt** with independent thresholds:
+
+| Parameter | Value |
+|---|---|
+| `CRUISE_SPEED_MPS` | 0.20 → **0.12** (felt too fast in the field, per report) |
+| `MIN_SPEED_MPS` | 0.05 → **0.06** (small extra margin above the STM32's 0.03 brake deadband) |
+| `SPEED_ALPHA_FULL_DEG` | **60°** (new — heading error at which speed bottoms out) |
+| `SPEED_CTE_FULL_M` | **0.8** = `LOOKAHEAD_M` (new — cross-track error at which speed bottoms out) |
+| `MIN_SPEED_FACTOR` | **0.3** (new — floor fraction of target speed even at max error, so it creeps rather than stops) |
+
+Speed = `target_speed × min(alpha_factor, cte_factor)` — the worse of the two errors wins (not multiplied, which would double-penalize a rover only moderately off on both). **Validated** by replaying the actual bad run's logged trajectory through the new law: speed now drops to the `0.06` floor exactly during the worst of the divergence (`cte=-0.94m`), instead of staying at ~0.18-0.20 throughout as it did on the real run.
+
+**Open, needs a decision:** the speed fix mitigates Bug 2's rate of growth but doesn't address the actuator-lag mismatch itself. A **steering-command slew-rate limiter** on the RPi side (cap how fast `steer_cmd` is allowed to change per tick, matched to what the actuator can plausibly track) would target the actual mechanism directly. Not built yet — additional scope beyond what was asked; worth deciding after seeing whether the speed fix alone is enough in the next field test.
+
+**Not yet re-tested on hardware** — both fixes verified via smoke tests (including exact real-scenario replays) and by replaying the real bad run's trajectory through the new code, but no new AUTO field run has happened since.
 
 **User-confirmed, open items:**
 - 1.6m effective lawnmower turn spacing (vs. the nominal 1.0m row spacing) — **accepted**, not a blocker.

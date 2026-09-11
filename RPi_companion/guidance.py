@@ -34,7 +34,9 @@ class PurePursuit:
                  wheelbase_m=cfg.WHEELBASE_M,
                  max_steer_deg=cfg.MAX_STEER_ANGLE_DEG,
                  yaw_bound_deg=cfg.YAW_BOUND_DEG,
-                 speed_cos_floor=cfg.SPEED_COS_FLOOR):
+                 speed_alpha_full_deg=cfg.SPEED_ALPHA_FULL_DEG,
+                 speed_cte_full_m=cfg.SPEED_CTE_FULL_M,
+                 min_speed_factor=cfg.MIN_SPEED_FACTOR):
         if len(waypoints) < 2:
             raise ValueError("PurePursuit needs at least 2 waypoints")
 
@@ -43,8 +45,10 @@ class PurePursuit:
         self.wp_thresh = wp_thresh_m
         self.L = wheelbase_m
         self.max_steer_deg = max_steer_deg
-        self.yaw_bound = math.radians(yaw_bound_deg)
-        self.speed_cos_floor = speed_cos_floor
+        self.yaw_bound = math.radians(yaw_bound_deg)  # STEERING law only — see update()
+        self.speed_alpha_full_deg = speed_alpha_full_deg
+        self.speed_cte_full_m = speed_cte_full_m
+        self.min_speed_factor = min_speed_factor
 
         self._nearest_idx = 0  # forward-only search cursor
         self._finished = False
@@ -89,11 +93,25 @@ class PurePursuit:
         cursor then skips segment 0->1 entirely — precisely the segment
         that should have matched — and the search fell through every
         later segment (genuinely outside Ld from the origin) straight to
-        the "aim at the final waypoint" fallback. The smoke test in
-        __main__ didn't catch this because it started 0.5m off-axis,
-        never landing exactly on a waypoint. See scratchpad.md."""
+        the "aim at the final waypoint" fallback. See scratchpad.md.
+
+        Scans EVERY candidate segment and keeps the intersection with the
+        GREATEST cumulative path progress (segment index + t), rather than
+        returning on the first valid match — also found on real hardware:
+        the "search one behind" fix above means the behind-segment is
+        checked first, and near a waypoint-advance boundary it can have
+        its own mathematically valid but BACKWARD intersection (the
+        near-side root, close to the segment's own start) even while the
+        correct forward segment also has one. Returning on first-match
+        would occasionally hand back that stale backward point instead of
+        the real forward one — hand-verified on a logged glitch (see
+        scratchpad.md): behind-segment gave progress 6.02, the correct
+        forward segment gave 7.57; first-match returned 6.02, flipping
+        alpha from -19 deg to -172 deg for one tick and yanking the
+        steering command with it."""
         n = len(self.waypoints)
         start_i = max(0, self._nearest_idx - 1)
+        best = None  # (progress, x, y, speed) — furthest-along valid hit so far
         for i in range(start_i, n - 1):
             ax, ay, _ = self.waypoints[i]
             bx, by, b_speed = self.waypoints[i + 1]
@@ -118,7 +136,12 @@ class PurePursuit:
 
             for t in (t_far, t_near):
                 if 0.0 <= t <= 1.0:
-                    return ax + t * dx, ay + t * dy, b_speed
+                    progress = i + t
+                    if best is None or progress > best[0]:
+                        best = (progress, ax + t * dx, ay + t * dy, b_speed)
+
+        if best is not None:
+            return best[1], best[2], best[3]
 
         fx, fy, f_speed = self.waypoints[-1]
         return fx, fy, f_speed
@@ -166,21 +189,36 @@ class PurePursuit:
         steer_deg = math.degrees(math.atan(curvature * self.L))
         steer_deg = max(-self.max_steer_deg, min(self.max_steer_deg, steer_deg))
 
-        # Speed shaping — same formula as the old P controller
-        # (Old_files/UGV_closed/p_controller.py): bound the heading error
-        # before using it to shape speed, then slow down toward sharp
-        # turns. Kept as the old defaults for now; retune from field-
-        # measured cross-track error later (see scratchpad.md).
-        alpha_bounded = max(-self.yaw_bound, min(self.yaw_bound, alpha))
-        speed = target_speed * max(self.speed_cos_floor, math.cos(alpha_bounded))
+        # Speed shaping — reduce speed as EITHER heading error (alpha) or
+        # cross-track error (cte) grows, so the rover actually slows down
+        # when it's off track instead of holding a near-constant cruise
+        # speed regardless of how bad the error gets.
+        #
+        # IMPORTANT: uses its OWN error thresholds (SPEED_ALPHA_FULL_DEG,
+        # SPEED_CTE_FULL_M), NOT self.yaw_bound (that one only bounds the
+        # STEERING law above). An earlier version reused self.yaw_bound
+        # (25 deg) here too — since cos(25 deg)=0.906, that capped the
+        # speed reduction to ~9% no matter how large the REAL error got. A
+        # logged real run hit alpha=157 deg while badly off track and
+        # speed barely dropped below cruise the whole time. See
+        # scratchpad.md.
+        cte = self._cross_track_error(x, y)
+        alpha_factor = max(self.min_speed_factor,
+                           1.0 - abs(math.degrees(alpha)) / self.speed_alpha_full_deg)
+        cte_factor = max(self.min_speed_factor,
+                         1.0 - abs(cte) / self.speed_cte_full_m)
+        # Worse of the two errors wins — a product would double-penalize a
+        # rover that's only moderately off on BOTH axes at once.
+        speed_factor = min(alpha_factor, cte_factor)
+
+        speed = target_speed * speed_factor
         speed = max(cfg.MIN_SPEED_MPS, speed)
 
         # Record diagnostics for the caller to log — see class docstring
-        # attributes above. Computed AFTER _advance_nearest_index() so the
-        # CTE reflects the current cursor.
+        # attributes above.
         self.last_lookahead = (lx, ly)
         self.last_alpha_deg = math.degrees(alpha)
-        self.last_cte_m = self._cross_track_error(x, y)
+        self.last_cte_m = cte
         self.last_target_idx = self._nearest_idx
 
         return steer_deg, speed
@@ -223,3 +261,19 @@ if __name__ == "__main__":
     print(f"Check 2 (exact-start real-mission case): lookahead=({lx:.2f}, "
           f"{ly:.2f}) steer={steer_deg:.1f} -- "
           f"{'OK' if ok else 'FAIL: lookahead jumped to the path end!'}")
+
+    # Check 3: replays an exact glitch captured on real hardware (see
+    # scratchpad.md) — rover near a waypoint-advance boundary, where the
+    # behind-segment (checked first, per the Check 2 fix) has its own
+    # valid but BACKWARD intersection. Confirms the furthest-along-wins
+    # logic picks the correct forward point instead.
+    path15 = wp.generate_straight_line(15.0)
+    pp3 = PurePursuit(path15)
+    pp3._nearest_idx = 7  # simulate having already tracked up to waypoint 7
+    pose3 = Pose(x=6.795, y=0.19, yaw=math.radians(5.7))
+    steer_deg, speed = pp3.update(pose3)
+    lx3, ly3 = pp3.last_lookahead
+    ok3 = lx3 > 6.795  # must be AHEAD of the rover, not behind at ~6.02
+    print(f"Check 3 (replay real glitch): lookahead=({lx3:.2f}, {ly3:.2f}) "
+          f"alpha={pp3.last_alpha_deg:.1f} -- "
+          f"{'OK' if ok3 else 'FAIL: lookahead jumped BEHIND the rover!'}")
