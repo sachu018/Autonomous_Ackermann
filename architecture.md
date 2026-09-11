@@ -318,6 +318,12 @@ Also flagged (unrelated): `173125`'s `speed_cmd_ms` still maxed at 0.12 — the 
 
 **Not yet retested on hardware.** Pure-Python change (`odometry.py`, `rover_config.py`), no firmware involved.
 
+### 3.15 Steering Pot L/R Center Mismatch — a Separate, Constant Bias
+
+Discussing §3.14 further, `angle_L`/`angle_R` were checked specifically at commanded-straight (`steer_cmd_deg==0`, before any turn had been issued) — the one condition where true Ackermann geometry says both wheels should read the same angle (inner/outer divergence only applies mid-turn). They don't: a repeatable **~1.1-1.6° gap in 3 of 4 field logs, including the one run that tracked cleanly** — which rules this out as the explanation for §3.14's run-to-run variability (a constant hardware offset biases every run equally) but flags it as a real, separate issue worth fixing regardless, since `_MapToAngle()` in `ads1115.c` trusts each wheel's `ADC_*_CENTER_RAW` as exactly 0° with no runtime cross-check between the two. Most likely cause: the pot-replacement recalibration (§ADC_L/R_MIN/MAX/CENTER_RAW history, scratchpad.md) judged "straight" separately per wheel rather than against one shared physical reference for both at once.
+
+**Tooling built:** `RPi_companion/calibrate_steering_pots.py` — walks full-left-lock / full-right-lock / center, printing live `angle_L`/`angle_R`/`delta` (non-blocking Enter-to-capture) so the operator can watch the two numbers agree before capturing the center point with a string-line across both wheels simultaneously. Doesn't need raw ADC in the UART frame (not present in `rpi_link.c`'s format) — instead exactly inverts `_MapToAngle()` using the current firmware constants to recover the true raw ADC at each captured position (round-trip verified < 1e-6 error over 1000 samples). Prints the 6 new `ADC_L/R_MIN/CENTER/MAX_RAW` values to paste into `ackermann_config.h`. Deployed to the RPi. **Not yet run against real hardware** — needs the user's physical walkthrough; firmware still holds the old, mismatched values until that's done and the new constants are flashed.
+
 ---
 
 ## 4. Version Control
