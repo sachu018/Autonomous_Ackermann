@@ -292,6 +292,16 @@ A follow-up empirical analysis (pooling real `(DAC, measured RPM)` pairs across 
 
 **Follow-up: `WHEEL_RPM_MAX` raised 20→25.** User field-measured the wheels actually reach 25 RPM, above the 20 RPM ceiling the firmware had been using (`WHEEL_RPM_MAX = MOTOR_RPM_MAX/GEAR_RATIO`, `400/20`). `MOTOR_RPM_MAX` raised `400→500` in `config.h` (the datasheet figure vs. the real measured max — `GEAR_RATIO` is a fixed mechanical spec, untouched), so `WHEEL_RPM_MAX` derives to 25.0 everywhere it's used, including `Ackermann_ComputeRPM()`'s forward RPM ceiling. Not yet rebuilt/reflashed/retested.
 
+### 3.13 First PID Field Test — Tracking Confirmed Good, Dead-Start Stall Found and Mitigated
+
+First real field test of §3.12/the `WHEEL_RPM_MAX` change: 2 straight-line runs. Once moving, tracking was excellent — cross-track error under 7cm and yaw drift under a couple degrees in both runs, confirming the Pure Pursuit + closed-loop PI combination works well together. Both runs ended early because the operator flipped SWB back to MANUAL (not a crash).
+
+**Issue found:** run 1 sat completely still (0 RPM, 0 displacement) for **27.6 seconds** after the mission began commanding 0.12 m/s, before finally moving. Run 2 (~50 min later, identical firmware/gains) only stalled 2.95s.
+
+**Root cause (worked out from PI math and timing — `dac_L/R` aren't in the telemetry log):** at 0.12 m/s target (~6.5 target RPM), `Kp=50 × 6.5 ≈ 325` correction (DAC≈1425, 35% duty) wasn't enough to break real-world static friction on run 1's ground. With the wheel not moving, error stays pinned at 6.5 every tick, so only the PI's integral term climbs — it took ~23s to hit `WHEEL_PID_MAX_INTEGRAL`'s clamp (150), pushing DAC to ≈3675 (90% duty), which finally broke it free a few seconds later. Run 2 needed far less (~1700 DAC, ~42% duty) — real terrain friction varies a lot run to run (plausibly run 1 loosened/rutted the same start patch), consistent with the traction variability flagged earlier in this session.
+
+**Mitigation applied (RPi-side config only, user's chosen option):** doubled `CRUISE_SPEED_MPS` 0.12→0.24 and `MIN_SPEED_MPS` 0.06→0.12 in `rover_config.py`. A higher target RPM gives a bigger instant `Kp` correction from the first tick and a faster-filling integral, shrinking the stall — but doesn't eliminate it on genuinely high-friction ground, since the integral clamp itself is unchanged. Raising `KP_WHEEL` (firmware) was offered as an alternative and declined this round — flagged as the next lever if the stall still shows up meaningfully at 0.24 m/s. **Not yet retested on hardware.**
+
 ---
 
 ## 4. Version Control

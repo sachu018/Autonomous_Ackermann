@@ -47,7 +47,17 @@ YAW_BOUND_DEG = 25.0        # clamp on heading error before it drives the STEERI
 #     own, much wider error thresholds below, decoupled from YAW_BOUND_DEG.
 # (2) 0.2 m/s cruise felt too fast in the field. Lowered — still a starting
 #     point pending further field tuning, not a validated final value.
-CRUISE_SPEED_MPS = 0.12
+# (3) 0.12 m/s then felt too slow once the closed-loop wheel PI (wheel_pid.c)
+#     was field-verified working — doubled to 0.24 m/s. Side benefit: a
+#     higher target RPM means a bigger instant Kp correction AND a faster-
+#     filling PI integral at mission start, which directly shrinks the
+#     dead-start stall seen in mission_20260911_165910 (27.6s before the
+#     wheels broke static friction on tougher ground) — see scratchpad.md.
+#     Does not eliminate that stall on genuinely high-friction ground, since
+#     the integral's clamp (WHEEL_PID_MAX_INTEGRAL) is unchanged; KP_WHEEL
+#     itself was deliberately left alone this round, pending confirmation
+#     this speed change alone is enough in the field.
+CRUISE_SPEED_MPS = 0.24
 
 # Below this |speed_target_ms|, the STM32 brakes instead of creeping
 # (AUTO_SPEED_DEADBAND_MS in ackermann_config.h = 0.03 m/s) — so this floor
@@ -57,8 +67,9 @@ CRUISE_SPEED_MPS = 0.12
 # — but this hasn't been directly exercised/confirmed on real hardware yet
 # (this run's speed never dropped anywhere near this low) — treat as
 # provisional until a field test actually drives at MIN_SPEED_MPS for a
-# sustained stretch and confirms the wheels keep turning.
-MIN_SPEED_MPS = 0.06
+# sustained stretch and confirms the wheels keep turning. Doubled alongside
+# CRUISE_SPEED_MPS above, to keep the same ratio between the two.
+MIN_SPEED_MPS = 0.12
 
 # Speed shaping: reduce speed as EITHER heading error (to the lookahead
 # point) or cross-track error grows — responsive to how far off-track the
