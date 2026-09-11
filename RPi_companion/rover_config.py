@@ -37,6 +37,32 @@ LOOKAHEAD_M = 0.8           # Ld — same value as the old system's LOOK_AHEAD_D
 WP_REACHED_THRESH_M = 0.25  # "arrived" / mission-end distance threshold
 YAW_BOUND_DEG = 25.0        # clamp on heading error before it drives the STEERING law
 
+# ── Odometry heading lock (odometry.py) ─────────────────────────────────────
+# The mission's "straight ahead" (0 deg) reference is locked once, from the
+# IMU, the first time Odometry.update() is called (see odometry.py's module
+# docstring). It used to be a SINGLE sample. Field logs showed that's
+# unreliable: imu_calib_mag/imu_calib_sys read 0 for the ENTIRE duration of
+# every field log collected so far (the magnetometer never calibrates on
+# this chassis — plausibly interference from the nearby drive motors/DAC),
+# yet the BNO055's default NDOF fusion mode still blends that uncalibrated
+# mag reading into heading_deg. Some mission starts land close to true
+# heading by luck (mission_20260911_170745 — clean, balanced tracking);
+# others land several degrees off (mission_20260911_165910 and _173125 —
+# both show cte_m/steer_cmd_deg pinned to ONE sign for the entire run, never
+# crossing zero, because the fixed initial error is baked into the whole
+# mission's frame and Pure Pursuit's proportional-only steering law settles
+# into a steady-state correction for it rather than eliminating it). See
+# scratchpad.md for the full log analysis.
+# HEADING_LOCK_SAMPLES consecutive IMU samples (at mission.py's LOOP_HZ=20)
+# are averaged (circular mean, not a naive angle average, to handle 0/360
+# wraparound) before locking the reference, instead of trusting one
+# instant's noise. Reduces but does not eliminate the risk — a genuinely
+# hard motor-interference bias present the whole 1.5s window will average
+# right through this. If the bias keeps recurring, the next things to try
+# are switching the BNO055 to IMUPLUS mode (drops the magnetometer from
+# fusion entirely) or physically relocating the IMU away from the motors.
+HEADING_LOCK_SAMPLES = 30   # 30 ticks @ 20 Hz = 1.5s of averaging
+
 # ── Speed profile ────────────────────────────────────────────────────────────
 # First real field run (mission_20260911_113236/114042) surfaced two things:
 # (1) speed barely varied (stayed ~0.18-0.20 m/s) even while badly off track

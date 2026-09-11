@@ -304,6 +304,20 @@ First real field test of §3.12/the `WHEEL_RPM_MAX` change: 2 straight-line runs
 
 **⚠️ Correction — the root-cause paragraph above is wrong.** The user identified the actual cause directly: SWB was simply still in MANUAL for that entire window — the mission script logs at 20Hz from launch regardless of switch position, so the CSV faithfully recorded the operator's own delay in flipping SWB to AUTO, not a stall. Checking the `auto_active` column (not done before writing the friction analysis) confirms this exactly: it reads 0 for the whole "stall," flips to 1, and `rpm_L/R` go nonzero **~150ms later** in both runs — a normal, fast PI response, not a 20+ second integral wind-up. `KP_WHEEL`/`WHEEL_PID_MAX_INTEGRAL` are not implicated by this data. The speed doubling above stands on its own (user's independent "feels slow" request) but its "shrinks the dead-start stall" justification does not hold and should be disregarded. Full trail: scratchpad.md, Mistake 16.
 
+### 3.14 Intermittent One-Sided Straight-Line Bias — Traced to the Heading Lock
+
+A further field log (`mission_20260911_173125`) prompted a full read-only re-analysis before any changes (user's explicit instruction). Found a real, well-evidenced pattern, distinct from anything above: `cte_m` never crosses zero across the entire ~186s/20m run (stays 0.000 to +0.069) and `steer_cmd_deg` is negative on literally every nonzero tick (3571/3571) — a fixed one-directional bias, not noise. Cross-checked against `mission_20260911_165910` (identical signature) and `_170745` (clean — steer splits ~50/50, cte crosses zero twice, same day, same firmware). **Intermittent**, and present in `165910` which predates this session's wheel-PID/speed work entirely — ruling those subsystems out.
+
+**Root cause:** `Odometry`'s heading reference (the mission's "straight ahead," see §3.9) locked from a single IMU sample at mission start. `imu_calib_mag`/`imu_calib_sys` read 0 for the entire duration of every field log examined so far — the magnetometer never calibrates on this chassis (plausibly interference from the nearby drive motors/DAC — `imu.py`'s own `is_fully_calibrated()` already treats mag as unreliable). The BNO055's default NDOF fusion mode still blends that uncalibrated mag reading into `heading_deg` regardless. A single-instant lock against a magnetometer under active interference is a coin-flip: sometimes close to true heading (`170745`), sometimes several degrees off (`165910`, `173125`) — and since the reference intentionally never re-corrects mid-mission, a bad lock steers the *entire* run, with Pure Pursuit's proportional-only law settling into a steady one-sided correction rather than eliminating the error. This is orthogonal to speed (a fixed angular bias, not a responsiveness gap).
+
+**Mitigation applied (user's chosen first step):** `Odometry.update()` now locks the reference from the circular mean (handles 0/360 wraparound) of `HEADING_LOCK_SAMPLES=30` (~1.5s @ 20Hz, new `rover_config.py` constant) consecutive readings instead of one. Pose is held at (0,0)/invalid during that window — the rover is expected to be stationary at script launch anyway, matching all 3 logs' actual behavior. `odometry.py`'s smoke test gained a Check 0 injecting ±5° jitter across the lock window, confirming the pose stays frozen/invalid throughout and the lock averages the jitter out rather than latching the last sample.
+
+**Explicitly a partial mitigation.** A sustained interference bias present for the whole 1.5s window would average right through it. Next options if the bias recurs: switch the BNO055 to IMUPLUS mode (drops the magnetometer from fusion entirely — trades absolute-compass heading for gyro-integration drift immunity to motor interference), or physically relocate the IMU away from the motors/DAC/power wiring.
+
+Also flagged (unrelated): `173125`'s `speed_cmd_ms` still maxed at 0.12 — the §3.13 `CRUISE_SPEED_MPS` doubling hadn't been synced to the RPi yet for this test.
+
+**Not yet retested on hardware.** Pure-Python change (`odometry.py`, `rover_config.py`), no firmware involved.
+
 ---
 
 ## 4. Version Control
