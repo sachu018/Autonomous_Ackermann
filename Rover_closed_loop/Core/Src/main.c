@@ -74,6 +74,10 @@ static SteerPID_t   steer_pid;
 static SteerAngles_t steer;
 static uint32_t     prev_loop_ts      = 0U;
 
+/* Centering watchdog (step 6) — see its comment at the call site */
+static uint8_t      center_watchdog_active   = 0U;
+static uint32_t     center_watchdog_start_ts = 0U;
+
 /* Closed-loop forward wheel-speed state (wheel_pid.c) — see ackermann.h */
 static WheelPID_t   wheel_pid_L, wheel_pid_R;
 /* USER CODE END PV */
@@ -347,26 +351,105 @@ int main(void)
     }
 
     /* ── 6. Steering actuator closed-loop control ──────────────────────────
-     * Drives the actuator at full 100% speed (7 mm/s) in the direction of
-     * the target angle until within STEER_DEADBAND_DEG (±0.5°).
+     * Two-zone control: BANG-BANG (100% speed) while |error| > STEER_PROP_ZONE_DEG,
+     * PID (steer_pid.c, previously dead code) once inside that zone — full speed
+     * gets the actuator to the neighborhood fast, PID brings it in gently instead
+     * of slamming into the deadband at 100% every time (that abrupt stop is what
+     * produced the ~4.3-4.5 deg approach-direction hysteresis measured in the
+     * field — see scratchpad.md). ACT_MIN_DUTY_PCT floors the PID's output like
+     * THR_FWD_MIN_DAC does for the rear wheels, so it can't command a duty too
+     * small to break the actuator's own static friction and stall short.
+     *
+     * "Centered" (stop) condition: when the TARGET is near zero (returning to
+     * straight — the case that actually drives the field drift), require BOTH
+     * angle_L and angle_R individually within STEER_DEADBAND_DEG, not just their
+     * average (steer.delta) — a plain average can read "centered" while the two
+     * wheels individually disagree, which is exactly what averaging was hiding
+     * (see scratchpad.md). Off-center targets keep the original delta-only
+     * check, since angle_L/angle_R legitimately diverge during a real turn
+     * (Ackermann inner/outer geometry) and requiring both to match a single
+     * target there would be wrong, not stricter.
+     *
+     * Watchdog: the per-wheel AND-check is only satisfiable if the actual
+     * angle_L/angle_R mismatch is under 2*STEER_DEADBAND_DEG — if that ever
+     * grows (pot drift, a failing sensor), the PID could hunt forever chasing
+     * an unreachable state, and this actuator is only rated for 10% duty cycle
+     * (see scratchpad.md's search of the datasheet) — sustained hunting risks
+     * cooking it. If the per-wheel check hasn't been satisfied within
+     * STEER_CENTER_WATCHDOG_US of continuously trying, fall back to the plain
+     * delta-based check (guaranteed satisfiable, since per-wheel-OK always
+     * implies delta-OK) so this is guaranteed to terminate either way.
+     *
      * Runs on RC validity + sensor health (safe to test with drive unpowered). */
     if (rc.rc_ok && steer.valid)
     {
         float err = ack.target_steer_deg - steer.delta;
-        if (fabsf(err) <= STEER_DEADBAND_DEG)
-        {
-            Actuator_Stop();
-        }
-        else
+
+        if (fabsf(err) > STEER_PROP_ZONE_DEG)
         {
             /* Positive error (target > actual): drive Left/Extend at 100%
              * Negative error (target < actual): drive Right/Retract at 100% */
             Actuator_SetSpeed(100.0f, (uint8_t)(err > 0.0f));
+            SteerPID_Reset(&steer_pid);
+            center_watchdog_active = 0U;
+        }
+        else
+        {
+            uint8_t targeting_center = (fabsf(ack.target_steer_deg) < CENTER_TARGET_EPS);
+            uint8_t centered;
+
+            if (targeting_center)
+            {
+                if (!center_watchdog_active)
+                {
+                    center_watchdog_active   = 1U;
+                    center_watchdog_start_ts = TIM5->CNT;
+                }
+
+                uint8_t per_wheel_ok = (fabsf(steer.angle_L) <= STEER_DEADBAND_DEG) &&
+                                       (fabsf(steer.angle_R) <= STEER_DEADBAND_DEG);
+                uint32_t elapsed_us = TIM5->CNT - center_watchdog_start_ts;
+
+                if (per_wheel_ok || elapsed_us > STEER_CENTER_WATCHDOG_US)
+                {
+                    /* Either genuinely centered on both wheels, or the
+                     * watchdog gave up waiting for that — fall back to the
+                     * plain averaged-delta check either way (always
+                     * satisfiable, and already true if per_wheel_ok is). */
+                    centered = (fabsf(err) <= STEER_DEADBAND_DEG);
+                }
+                else
+                {
+                    centered = 0U;  /* still within budget, keep insisting on both wheels */
+                }
+            }
+            else
+            {
+                center_watchdog_active = 0U;
+                centered = (fabsf(err) <= STEER_DEADBAND_DEG);
+            }
+
+            if (centered)
+            {
+                Actuator_Stop();
+                SteerPID_Reset(&steer_pid);
+                center_watchdog_active = 0U;
+            }
+            else
+            {
+                float duty = SteerPID_Update(&steer_pid, ack.target_steer_deg,
+                                             steer.delta, dt_s, NULL);
+                if (fabsf(duty) > 0.0f && fabsf(duty) < ACT_MIN_DUTY_PCT)
+                    duty = (duty >= 0.0f) ? ACT_MIN_DUTY_PCT : -ACT_MIN_DUTY_PCT;
+                Actuator_SetSpeed(fabsf(duty), (uint8_t)(duty > 0.0f));
+            }
         }
     }
     else
     {
         Actuator_Stop();
+        SteerPID_Reset(&steer_pid);
+        center_watchdog_active = 0U;
     }
 
     /* ── 7. Drive rear motors ────────────────────────────────────────────── */

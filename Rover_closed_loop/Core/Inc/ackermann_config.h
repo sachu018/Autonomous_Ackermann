@@ -37,8 +37,14 @@
 
 /* ── Steering limits & deadband ─────────────────────────────────────────── */
 #define MAX_STEER_ANGLE_DEG     45.0f   /* Max physical steering lock (deg)  */
-#define STEER_DEADBAND_DEG      2.5f    /* Angular error deadband     (deg)  */
-                                        /* (Within ±2.5°, actuator stops/holds) */
+/* Narrowed 2.5 -> 1.5 deg once the actuator control stopped being pure
+ * bang-bang (see STEER_PROP_ZONE_DEG below) — the old value was sized to
+ * tolerate bang-bang's abrupt full-speed-until-stop overshoot; the PID
+ * zone approaches gently enough that a tighter tolerance is safe to try.
+ * Field-verify: if the actuator ever hunts/oscillates right at this
+ * boundary, widen it back up before anything else. */
+#define STEER_DEADBAND_DEG      1.5f    /* Angular error deadband     (deg)  */
+                                        /* (Within ±1.5°, actuator stops/holds) */
 
 /* Below this |angle| the Ackermann equations are treated as "straight" to
  * avoid the tan(delta) singularity at zero.
@@ -55,9 +61,13 @@
 #define ACK_STRAIGHT_DEG        3.0f
 
 /* ── Steering PID gains (from the BBB config.py port — UNTUNED on this
- * chassis). steer_pid.c is currently dead code — main.c's actuator control
- * is bang-bang, not PID-driven — but SteerPID_Init() is still called at
- * boot, so these must exist and compile. */
+ * chassis, and now genuinely live: main.c's actuator control (step 6) uses
+ * bang-bang beyond STEER_PROP_ZONE_DEG, then hands off to SteerPID_Update()
+ * inside it, replacing the old pure-bang-bang-to-stop behavior that
+ * produced the field-measured ~4.3-4.5 deg approach-direction hysteresis
+ * (see scratchpad.md). These gains were ported from the BBB project and
+ * have NEVER been exercised on this hardware before — expect to retune in
+ * the field, same as every other gain in this project so far. */
 #define KP_STEER                5.0f
 #define KI_STEER                0.1f
 #define KD_STEER                0.5f
@@ -65,6 +75,42 @@
 /* Integral anti-windup: clamp so the integral term alone cannot exceed this
  * many percent of duty cycle. */
 #define STEER_INTEGRAL_MAX_PCT  50.0f
+
+/* ── Actuator two-zone control (main.c step 6) ──────────────────────────────
+ * |error| > STEER_PROP_ZONE_DEG: bang-bang at 100% (unchanged, fast approach).
+ * |error| <= STEER_PROP_ZONE_DEG: hand off to steer_pid.c instead of running
+ * bang-bang all the way to the deadband — the abrupt full-speed stop is what
+ * produced the measured hysteresis. */
+#define STEER_PROP_ZONE_DEG     4.0f
+
+/* Floor on the PID's commanded duty magnitude, same role as THR_FWD_MIN_DAC
+ * plays for the rear wheels: a small computed duty can be too weak to break
+ * the actuator's own static friction, stalling short of centered instead of
+ * creeping the last bit in. STARTING GUESS, not a measured value — this
+ * actuator (PA-12-300-1500, 300mm/7mm-s/12V, self-locking screw) has no
+ * published minimum-moving-duty spec; field-test and correct, the same way
+ * THR_FWD_MIN_DAC's original guess had to be corrected from field data. */
+#define ACT_MIN_DUTY_PCT        40.0f
+
+/* How close |target_steer_deg| must be to 0 before the "centered" check
+ * requires BOTH angle_L and angle_R individually within STEER_DEADBAND_DEG,
+ * instead of just their average (steer.delta) — see step 6's comment in
+ * main.c for why the average alone can hide a real per-wheel disagreement.
+ * Loose enough to cover Pure Pursuit's small near-straight corrections,
+ * tight enough to stay clear of genuine small turns (where angle_L/angle_R
+ * legitimately diverge by Ackermann geometry, and requiring both to match
+ * a single target would be wrong). */
+#define CENTER_TARGET_EPS       1.0f
+
+/* Safety bound on the per-wheel centering check above: it's only
+ * satisfiable if the actual angle_L/angle_R mismatch is under
+ * 2*STEER_DEADBAND_DEG. If that ever grows (pot drift, a failing sensor),
+ * the PID could hunt indefinitely chasing an unreachable state — and this
+ * actuator is only rated for 10% duty cycle (see scratchpad.md), so
+ * sustained hunting risks cooking it. After this many microseconds of
+ * continuously trying, main.c falls back to the plain delta-based check
+ * (always satisfiable) so centering is guaranteed to terminate either way. */
+#define STEER_CENTER_WATCHDOG_US 2500000U   /* 2.5 s */
 
 /* ── ADS1115 steering potentiometer feedback ────────────────────────────── */
 #define ADS1115_I2C_ADDR        0x48U   /* 7-bit. Shares I2C1 with DACs 0x60/0x61 */
