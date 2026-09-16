@@ -958,7 +958,128 @@ received, independent of what the RPi is doing. SWB back to MANUAL always
 hands control back to the RC sticks immediately, independent of UART link
 state.
 
-### 14.7 Verification Performed
+### 14.7 Guidance & Motion Stack (RPi-side) ✅ field-tested
+
+The guidance/localization loop that §14.8 of the earlier revision of this
+document flagged as "not yet built" now exists and has been through several
+rounds of real field testing. No RTK/GNSS — position is dead-reckoned from
+STM32 encoder feedback + IMU heading only, the same class of approach the
+BBB-era scripts (`Old_files/dev_bak/`) used.
+
+- **`odometry.py`** — fuses encoder distance (`(rpm_L+rpm_R)/2`, via
+  `uart_link.py`'s feedback frame) with IMU heading (`imu.py`, DFRobot Fermion
+  BNO055) into a running `(x, y, yaw)` pose, compass-referenced. The heading
+  "zero" reference locks **once**, from the **circular mean of
+  `HEADING_LOCK_SAMPLES` (30, ~1.5s @ 20Hz) consecutive IMU readings**, the
+  first time `update()` is called in a `mission.py` process — not once per
+  mission restart (`reset()` only re-zeros position, deliberately). The
+  averaging (rather than a single sample) is a mitigation, not a full fix,
+  for an intermittent heading-lock bias traced to the BNO055's magnetometer
+  never calibrating on this chassis (`imu_calib_mag`/`imu_calib_sys` read 0
+  in every field log collected) — see §14.11.
+- **`guidance.py`** — Pure Pursuit path follower. Chosen over the BBB's
+  heading-error-PID approach specifically because its output *is* a steering
+  angle, mapping directly onto `uart_link.py`'s
+  `send_command(steer_target_deg, speed_target_ms)` with no intermediate
+  V,W→wheel-RPM conversion. Speed is shaped down (toward `MIN_SPEED_FACTOR`
+  of the target) as heading error (`alpha`) or cross-track error (`cte`)
+  grows, using its own thresholds (`SPEED_ALPHA_FULL_DEG`,
+  `SPEED_CTE_FULL_M`) independent of the steering law's own error bound.
+- **`waypoints.py`** — path generators (straight/rectangle/circle/lawnmower)
+  + CSV I/O. Clamps lawnmower row-turn radius to `MIN_TURN_RADIUS_M`
+  (`= WHEELBASE_M / tan(MAX_STEER_ANGLE_DEG)`) rather than silently emitting
+  an undrivable path.
+- **`mission.py`** — the runnable entry point. Always computes and sends
+  commands at 20Hz regardless of SWB position (matches `rpi_link.c`'s
+  "STM32 ignores AUTO commands unless SWB is AUTO" safety design — inert
+  while MANUAL, not merely idle) and treats SWB's MANUAL→AUTO transition as
+  the mission-(re)start trigger, not script-launch time. Auto-archives each
+  run's path to `logs/mission_<timestamp>_path.csv` and logs a 31-column
+  telemetry CSV (`logs/mission_<timestamp>.csv`) — pose, guidance internals
+  (`cte_m`, `alpha_deg`, `lookahead_x/y_m`, `target_idx`), full raw IMU
+  (heading/roll/pitch/gyro/accel/all 4 calibration fields), and STM32
+  feedback (`angle_L/R`, `rpm_L/R`, status bits) every tick — this is what
+  every field diagnosis in §14.11 was worked out from.
+- **`rover_config.py`** — shared RPi-side tunables, hand-kept in sync with
+  `ackermann_config.h`/`config.h` (no shared header between the two
+  languages/processors). Current speed profile: `CRUISE_SPEED_MPS = 0.24`,
+  `MIN_SPEED_MPS = 0.12` (doubled from an initial 0.12/0.06 once the
+  closed-loop wheel PI — §14.8 — was field-verified working).
+- **`calibrate_steering_pots.py`** — field recalibration tool for the
+  steering potentiometers (§14.11). Live `angle_L`/`angle_R`/`delta`
+  readout over the existing UART link, walks full-left-lock/full-right-lock/
+  center; recovers true raw ADC at each captured position by exactly
+  inverting `_MapToAngle()`'s own formula with the *current* firmware
+  constants (no raw-ADC field exists in the UART frame, so this avoids
+  needing one), rather than requiring a new debug channel.
+
+### 14.8 Closed-Loop Wheel-Speed & Steering-Actuator Control (STM32-side) ✅
+
+Two of §8/§9's original open-loop assumptions were replaced this phase, both
+after field data showed the open-loop version didn't hold up:
+
+**Rear-wheel throttle — closed-loop PI, forward only.** The original
+`_ToThrottle()` linear RPM→DAC map (§2.3-style open-loop guess) was field-
+measured to be wrong on both its floor and its slope — actual wheel speed
+ran 2.8-5.5× the commanded speed depending on the run, and a first attempt
+to fix the floor alone made it *worse* (raising a line's intercept while
+holding the far endpoint fixed lifts the whole line, not just the low end).
+Replaced entirely for **forward** driving with `wheel_pid.c` — a PI loop
+(`Kp=50, Ki=15`, carried over directly from the BBB-era
+`Old_files/dev_bak/ugv_pid_waypoint.py`'s `BBBHardware`, same motors/gearbox/
+DAC hardware) closing on live `Encoder_GetRPM_L()/R()` feedback each tick,
+sidestepping the need for an accurate static curve at all — including under
+terrain/traction variation, which a static curve fundamentally can't track.
+`THR_FWD_MIN_DAC` is now just a non-critical starting floor the integral
+term corrects away from. **Reverse driving is unchanged**, still the
+original open-loop `_ToThrottle()` with `THR_REV_MIN_DAC`/`THR_REV_MAX_DAC`
+— a deliberate scope decision, not an oversight. `WHEEL_RPM_MAX` (the
+forward RPM ceiling used by `Ackermann_ComputeRPM()`) was also raised
+20→25 RPM, `config.h`'s `MOTOR_RPM_MAX` corrected 400→500 against a field-
+measured true motor max (the 400 figure was the datasheet spec, not
+reality).
+
+**Front steering actuator — bang-bang beyond a threshold, PID inside it.**
+The actuator's control (§8.2/main.c step 6) was pure bang-bang from the
+project's start — 100% speed toward the target until within
+`STEER_DEADBAND_DEG`, then stop — which turned out to produce a real,
+field-measured **~4.3-4.5° approach-direction hysteresis**: settling to
+commanded-zero from full-left-lock vs. full-right-lock left the wheels
+measurably different physical distances apart, because an abrupt full-speed
+stop overshoots by an amount that depends on momentum/approach direction,
+not a fixed point. Now: bang-bang (100%) while `|error| > STEER_PROP_ZONE_DEG`
+(4°), then a **PID** (`steer_pid.c` — present since early in the project but
+never wired in until now; `SteerPID_Init()` was called at boot but
+`SteerPID_Update()` was dead code) takes over inside that zone, floored at
+`ACT_MIN_DUTY_PCT` (40%, a field-tuning starting guess — this actuator, a
+PA-12-300-1500 300mm/7mm-s/12V unit, has no published minimum-moving-duty
+spec, same situation `THR_FWD_MIN_DAC` was in before it was field-measured).
+`STEER_DEADBAND_DEG` was narrowed 2.5°→1.5° accordingly.
+
+The "centered" (stop) decision also changed for the specific case of
+returning to straight (`|target_steer_deg| < CENTER_TARGET_EPS`, 1.0°): it
+now requires **both** `angle_L` and `angle_R` individually within
+`STEER_DEADBAND_DEG`, not just their average `steer.delta` — a plain
+average can read "centered" while the two wheels individually disagree,
+which is exactly how a real L/R potentiometer-calibration mismatch (§14.11)
+was hiding behind a superficially-fine `delta` value. Off-center targets
+keep the original delta-only check, since `angle_L != angle_R` is *expected*
+there (true Ackermann inner/outer divergence during an actual turn) —
+`Ackermann_ComputeRPM()`/the electronic differential is unaffected either
+way, still driven by `steer.delta`. Because the per-wheel check is only
+satisfiable at all if the true `angle_L`/`angle_R` mismatch is under
+`2 * STEER_DEADBAND_DEG`, and this actuator is rated for only **10% duty
+cycle** (also found via the datasheet search — not previously documented
+anywhere in this project), a watchdog (`STEER_CENTER_WATCHDOG_US`, 2.5s)
+falls back to the always-satisfiable delta-only check if the per-wheel
+condition hasn't been met in time, so a drifted/failing sensor can't make
+the actuator hunt indefinitely against its own duty-cycle rating.
+
+**Status: source-complete, not yet hardware-verified.** Both changes above
+are committed but await the user's next STM32CubeIDE rebuild + reflash and
+field retest.
+
+### 14.9 Verification Performed
 
 Confirmed on hardware, rover on a jack: `check_stm32_link.py` (RPi side) shows
 a steady **20.0 frames/s, zero checksum failures**, correct `ARMED`/`RC_OK`
@@ -970,19 +1091,61 @@ while the RPi is also wired there) was used during bring-up to isolate the
 STM32 side of the link from the RPi side and prove the STM32 was transmitting
 correctly the whole time the RPi-side symptom was being debugged.
 
-### 14.8 File Reference
+Since then, §14.7's full guidance stack has run multiple real straight-line
+field missions end to end (SWB flipped to AUTO, `mission.py` driving via
+this same link) — tracking itself (cross-track error) has been consistently
+good, **under ~7cm over a 20m run**, once the issues in §14.11 stopped
+masking it.
+
+### 14.10 File Reference
 
 | File | Purpose |
 |---|---|
 | `Rover_closed_loop/Core/Src/rpi_link.c` `.h` | USART2 DMA+IDLE framing, command parse, feedback send |
 | `Rover_closed_loop/Core/Src/ackermann.c` — `Ackermann_RunAuto()` | Autonomous motion pipeline: takes the RPi's absolute steering/speed targets directly, bypassing the RC stick deadband/curve; electronic differential still runs off the *measured* angle, same as manual mode |
+| `Rover_closed_loop/Core/Src/wheel_pid.c` `.h` | Closed-loop forward wheel-speed PI (§14.8) — encoder-fed, replaces the old open-loop DAC guess for forward driving only |
+| `Rover_closed_loop/Core/Src/steer_pid.c` `.h` | Steering actuator PID (§14.8) — now live inside `STEER_PROP_ZONE_DEG`, was dead code (`Update()` never called) for most of the project |
 | `RPi_companion/uart_link.py` | RPi-side counterpart to `rpi_link.c` — same frame formats, independently maintained (no shared schema file) |
 | `RPi_companion/check_stm32_link.py` | Connectivity diagnostic — frame rate, checksum failures, status bits |
 | `RPi_companion/read_encoders.py` | Passive live readout of wheel RPM + steering angle |
-| `RPi_companion/imu.py` + `test_imu.py` + `calibrate_imu.py` | DFRobot Fermion BNO055 driver (RPi-local, I2C1 on `GPIO2`/`GPIO3`/Pin3/Pin5) — not part of the STM32 interconnection itself, but the other half of what the RPi's guidance layer will fuse |
+| `RPi_companion/calibrate_steering_pots.py` | Field recalibration tool for `ADC_L/R_MIN/CENTER/MAX_RAW` (§14.7, §14.11) |
+| `RPi_companion/imu.py` + `test_imu.py` + `calibrate_imu.py` | DFRobot Fermion BNO055 driver (RPi-local, I2C1 on `GPIO2`/`GPIO3`/Pin3/Pin5) |
+| `RPi_companion/odometry.py`, `guidance.py`, `waypoints.py`, `mission.py`, `rover_config.py` | The guidance/motion stack — see §14.7 |
+| `RPi_companion/make_straight_path.py`, `make_rectangle_path.py`, `make_circle_path.py`, `make_lawnmower_path.py`, `path_prompts.py` | Interactive per-shape path generators over `waypoints.py`, saving to `paths/<shape>_<dims>.csv` |
 | `ESP32_uart_sniffer/ESP32_uart_sniffer.ino` | Bring-up diagnostic only — read-only tap on STM32 `PA2` |
 
-**Not yet built:** the actual guidance/localization loop on the RPi that
-*uses* this link (waypoint following, IMU/GNSS fusion) — the interconnection
-and both endpoints' diagnostics are verified working, but nothing autonomous
-runs yet. See `architecture.md`'s Phase 5 checklist for current status.
+### 14.11 Known Open Issues ⚠️
+
+Full diagnostic trail for all of these — the actual field logs, numbers, and
+reasoning — lives in `scratchpad.md`; this is the condensed pointer.
+
+- **Intermittent heading-lock bias.** The BNO055's magnetometer never
+  calibrates on this chassis (`imu_calib_mag`/`imu_calib_sys` read 0 in every
+  field log collected — plausibly interference from the nearby drive
+  motors/DAC), yet its default NDOF fusion mode still blends that reading
+  into `heading_deg`. Since §14.7's heading reference locks once per
+  `mission.py` run, a bad lock steers the *entire* subsequent mission one
+  way (cross-track error pinned to one sign, steering command one sign, for
+  the whole run) rather than centering on straight. Mitigated (not fully
+  fixed) by averaging `HEADING_LOCK_SAMPLES` readings instead of trusting
+  one instant — reduces but can't eliminate a sustained bias present for the
+  whole averaging window. Next options if it recurs: switch the BNO055 to
+  IMUPLUS mode (drops the magnetometer from fusion entirely, trading
+  absolute-compass heading for gyro-integration drift immunity to motor
+  interference), or physically relocate the IMU away from the motors/DAC.
+- **Steering potentiometer L/R calibration.** `angle_L`/`angle_R` disagree
+  by ~0.6-1.6° even at commanded-straight (where true Ackermann geometry
+  says they should match exactly, since inner/outer divergence only applies
+  mid-turn) — most likely because the prior pot-replacement recalibration
+  judged "straight" separately per wheel instead of against one shared
+  physical reference for both simultaneously. `calibrate_steering_pots.py`
+  (§14.7) exists to re-measure this correctly; two field attempts have been
+  run, but new values haven't been committed to `ackermann_config.h` yet —
+  the actuator hysteresis below was making "center" hard to measure
+  repeatably (two calibration attempts disagreed on it by ~2.9°), so that
+  was fixed first (§14.8). Re-run the recalibration now that centering
+  should be far more repeatable.
+- **Actuator approach-direction hysteresis — fix implemented, not yet
+  field-verified.** See §14.8's bang-bang/PID redesign. Expected to shrink
+  the ~4.3-4.5° hysteresis substantially; awaiting the user's rebuild +
+  reflash + retest to confirm.
