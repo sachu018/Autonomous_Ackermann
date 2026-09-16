@@ -1881,3 +1881,38 @@ SECTION 9 — CHRONOLOGICAL SESSION SUMMARY
 ================================================================================
   END OF WORK LOG
 ================================================================================
+
+================================================================================
+  ADDENDUM — 2026-09-16 (added without altering anything above)
+================================================================================
+
+This log's own scope ends at Session 3 (2026-07-30) — the BeagleBone Black
+to STM32F411CEU6 migration and early bring-up (motor driver, encoders,
+debug telemetry). All work since then is a separate, actively-developed
+project, Rover_closed_loop/ (closed-loop Ackermann front-steering + a
+Raspberry Pi 5 autonomous companion computer) — NOT a continuation of the
+migration this log tracks.
+
+That work has its own, continuously-updated logging system at the project
+root: architecture.md (design/build log), scratchpad.md (mistakes, root
+causes, corrections), works.md (a running table of problems and fixes).
+Those are the current, authoritative record for anything past Session 3 —
+this file is not being extended to cover them, to avoid the same content
+drifting out of sync in two places.
+
+Milestones reached since this log closed, for orientation only (see the
+files above for the actual detail):
+  · Rover_closed_loop/ built: closed-loop Ackermann steering (ADS1115
+    potentiometer feedback), electronic differential, RPi5 UART link
+    (rpi_link.c / uart_link.py), MANUAL/AUTO mode arbitration via SWB.
+  · RPi_companion/ built: no-RTK autonomous guidance (Pure Pursuit +
+    dead-reckoning odometry), mission.py as the runnable entry point,
+    multiple real field tests.
+  · Rear-wheel throttle rebuilt from an open-loop RPM->DAC guess to a
+    closed-loop PI (wheel_pid.c), forward driving only.
+  · Steering actuator control rebuilt from pure bang-bang to bang-bang
+    beyond a threshold + PID (steer_pid.c, activated after being dead code
+    since early in the project) inside it, fixing a field-measured
+    approach-direction hysteresis.
+  · Documentations/Rover_study.md's §14 is the settled-reference version
+    of all of the above, kept current as of this addendum's date.

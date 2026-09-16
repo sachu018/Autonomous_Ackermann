@@ -167,7 +167,22 @@ void Set_Actuator(int direction, uint8_t speed_percent) {
 - Cause A: Black Pill BOOT0 jumper set incorrectly or missing power.
   * Solution: Ensure BOOT0 jumper is on 0 position and 3.3V power LED is lit.
 - Cause B: SWD debug disabled in CubeMX.
-  * Solution: In CubeMX SYS menu, set Debug to "Serial Wire". If locked out, press 
+  * Solution: In CubeMX SYS menu, set Debug to "Serial Wire". If locked out, press
     and hold RST on Black Pill, click Connect in STM32CubeProgrammer, then release RST.
 
+================================================================================
+ADDENDUM — 2026-09-16 (appended, nothing above this line was changed)
+================================================================================
+The wiring/CubeMX/flashing steps above are still accurate as-is (no pin or
+clock changes since this was written). The `Set_Actuator()` example in
+section 3, however, is just a getting-started test routine, not the actual
+production control law — don't mistake it for current behavior. The real
+implementation (`Rover_closed_loop/Core/Src/main.c` step 6, `actuator.c`)
+has since evolved to a two-zone controller: bang-bang (100% speed, same
+idea as the example here) only while the steering error is large, then a
+PID controller (`steer_pid.c`) takes over for fine positioning near the
+target, floored at a minimum duty so it can't stall out from static
+friction. See `Documentations/Rover_study.md` §14.8 for the full current
+design and why it changed (a field-measured approach-direction hysteresis
+in the old pure-bang-bang behavior).
 ================================================================================

@@ -44,3 +44,23 @@ Same idea, but it's rows + turns stitched together: drive 6m along +X, curve 180
 , can we make 4 different python scripts for the 4 shapes, like when we call python3 script_name.py(name the script based on the shape creating) it will ask for
   the dimesions like for straight line the length, for rectangle the length and breadth, for circle the diameter, for lawnmover the row length and number of rows. and save the files with
   appropriate filename with that can match the mission.py with suffixes.
+
+================================================================================
+ADDENDUM — 2026-09-16 (appended, nothing above this line was changed)
+================================================================================
+
+- The 4-scripts request above was built: `make_straight_path.py`,
+  `make_rectangle_path.py`, `make_circle_path.py`, `make_lawnmower_path.py`
+  (thin interactive wrappers over `waypoints.py`, prompting for exactly the
+  dimensions described above via a shared `path_prompts.py` helper), saving
+  to `paths/<shape>_<dims>.csv`. Verified against the `python3 -c ...`
+  one-liners above — same waypoint counts (11/29/64/49).
+- The `0.200` speed_mps values in every example above are OUT OF DATE — that
+  was an early placeholder. The actual value has moved twice since:
+  0.2 -> 0.12 (felt too fast in the field) -> 0.24 (current, doubled once
+  the closed-loop wheel-speed PI was field-verified working). The current
+  value is `CRUISE_SPEED_MPS` in `RPi_companion/rover_config.py` — treat
+  that file as the source of truth, not the numbers in this example.
+- Full detail on both of the above, and everything since, is in
+  `architecture.md`/`scratchpad.md`/`works.md` at the project root, and the
+  settled-reference version in `Rover_study.md` §14.
