@@ -1,0 +1,700 @@
+================================================================================
+  CURRENT ROVER STATUS — Rover_closed_loop/ + RPi_companion/
+  Snapshot date: 2026-09-17
+================================================================================
+
+  PURPOSE OF THIS FILE
+  --------------------
+  A single, current-state snapshot of the ENTIRE system as it stands right
+  now — architecture, algorithms, equations, every tunable constant, pin
+  mapping, protocol, and open issues — in one place. Unlike the other files
+  in Documentations/, which are either historical logs (WorkLog.txt,
+  Encoder_works.txt) or narrow guides (stm32_md10c_interface.txt,
+  test_guide.txt), this file is meant to be kept live: as the system keeps
+  changing, THIS file gets updated (not rewritten from scratch each time —
+  edit the relevant section, bump the snapshot date above, and note the
+  change in the CHANGE LOG at the very end).
+
+  Full reasoning/derivation/mistake-and-correction trail for everything
+  below lives in architecture.md / scratchpad.md / works.md at the project
+  root, and the settled-reference version in Rover_study.md §14. This file
+  is the "just tell me what's true right now" version.
+
+  SCOPE: this covers Rover_closed_loop/ (STM32 firmware) and RPi_companion/
+  (Raspberry Pi 5 autonomous stack) ONLY — the sibling open-loop Rover/
+  project (pipeline.c/kinematics.c) is a different, separate codebase and
+  is not covered here (see Rover_study.md §1-13 for that one).
+
+================================================================================
+  1. SYSTEM OVERVIEW
+================================================================================
+
+  Agricultural rover, Ackermann front-steering + rear electronic
+  differential, two control computers linked by UART:
+
+    ┌─────────────────────────────┐        UART, 20 Hz         ┌──────────────────────────────┐
+    │   Raspberry Pi 5 (Linux)     │  ───────────────────────▶ │  STM32F411CEU6 "Black Pill"   │
+    │   RPi_companion/ (Python)    │  steer_target_deg,         │  Rover_closed_loop/ (bare-     │
+    │                              │  speed_target_ms            │  metal C, STM32Cube HAL)       │
+    │  - IMU (BNO055) fusion       │  ◀─────────────────────── │                                │
+    │  - Dead-reckoning odometry   │  angle_L, angle_R,          │  - RC (FlySky iBUS) input      │
+    │  - Pure Pursuit guidance     │  rpm_L, rpm_R, status        │  - Steering pot feedback       │
+    │  - Path/waypoint management  │                              │    (ADS1115)                   │
+    │  - Mission logging           │                              │  - Electronic differential     │
+    │                              │                              │  - Closed-loop wheel-speed PI  │
+    │  NOT safety-critical,        │                              │  - Steering actuator control   │
+    │  NOT real-time               │                              │    (bang-bang + PID)           │
+    │                              │                              │  - Contactor arm/disarm        │
+    │                              │                              │  - ALL failsafes               │
+    └─────────────────────────────┘                              └───────────────┬────────────────┘
+                                                                                    │
+                                                          ┌─────────────────────────┼─────────────────────────┐
+                                                          │                         │                         │
+                                                   FlySky RC RX              ADS1115 (I2C1)            Cytron MD10C ×2
+                                                   (iBUS, PA10)          steering pots L/R           (rear wheel throttle,
+                                                                                                       MCP4725 DACs)
+                                                                                    │
+                                                                          Linear actuator (steering,
+                                                                          PA8 PWM / PA5 DIR,
+                                                                          PA-12-300-1500,
+                                                                          300mm/7mm-s/12V)
+
+  Division of responsibility: the RPi is a second COMMAND SOURCE, not a
+  replacement for the STM32's control authority. The STM32 always owns
+  everything safety-critical and real-time (arming, failsafes, the actual
+  motor/actuator drive); the RPi's commands are only acted on when SWB
+  (transmitter switch) selects AUTO, and only while the UART link is
+  healthy — see §7 (Failsafes).
+
+================================================================================
+  2. HARDWARE — PIN MAPPING (Rover_closed_loop/ build)
+================================================================================
+
+  Function                | Pin        | Peripheral / Mode         | Notes
+  -------------------------|------------|---------------------------|---------------------------------
+  Contactor                | PB0        | GPIO output PP            | HIGH = engaged
+  Rev Left                 | PB1        | GPIO output PP            | HIGH = reverse
+  Brake Left               | PB10       | GPIO output PP            | HIGH = brake on
+  Brake Right              | PB12       | GPIO output PP            | HIGH = brake on
+  Rev Right                | PB13       | GPIO output PP            | HIGH = reverse
+  I2C1 SCL                 | PB6        | I2C1, AF4, open-drain     | DACs (0x60/0x61) + ADS1115 (0x48)
+  I2C1 SDA                 | PB7        | I2C1, AF4, open-drain     | 100 kHz
+  iBUS RX (RC receiver)    | PA10       | USART1_RX, AF7, DMA       | do not connect anything else
+  Debug TX                 | PA9        | USART1_TX, AF7            | -> ESP32 bridge (optional)
+  Encoder L A/B            | PA0 / PA1  | TIM2_CH1/CH2, AF1         | 32-bit counter
+  Encoder R A/B            | PA6 / PA7  | TIM3_CH1/CH2, AF2         | 16-bit counter, wraps — handled
+                            |            |                           | in software (encoder.c _Delta16())
+  RPi link TX              | PA2        | USART2_TX, DMA+IDLE       | -> RPi5 Pin10/GPIO15 (RXD)
+  RPi link RX              | PA3        | USART2_RX, DMA+IDLE       | <- RPi5 Pin8/GPIO14 (TXD)
+  Steering actuator PWM    | PA8        | TIM1_CH1 PWM              | 0-999 duty (ARR=999, ~1kHz)
+  Steering actuator DIR    | PA5        | GPIO output PP            | HIGH=extend/left, LOW=retract/right
+  SWD                      | PA13/PA14  | SWDIO/SWCLK               | debug
+  Status LED               | PC13       | GPIO output PP            | onboard, active-LOW
+
+  RPi5 side:
+    GPIO14 / Pin8  (TXD) -> STM32 PA3 (USART2_RX)
+    GPIO15 / Pin10 (RXD) <- STM32 PA2 (USART2_TX)
+    GND common
+    IMU (BNO055) on I2C1: SDA=GPIO2/Pin3, SCL=GPIO3/Pin5, VCC=3V3/Pin1, GND=Pin6
+
+  RPi5 OS prerequisites (all done, see Rover_study.md §14.2 for why each
+  was needed): `enable_uart=1` + `dtoverlay=disable-bt` in
+  /boot/firmware/config.txt, serial console disabled
+  (console=serial0,... removed from cmdline.txt, serial-getty unit
+  disabled), dtparam=i2c_arm=on for the IMU bus.
+
+================================================================================
+  3. PHYSICAL / MECHANICAL SPECS
+================================================================================
+
+  Chassis geometry (ACK_WHEELBASE_M / ACK_TRACK_M in ackermann_config.h,
+  mirrored in RPi_companion/rover_config.py):
+    Wheelbase (front-rear axle)        : 0.80 m
+    Track (left-right wheel)           : 0.65 m
+    Wheel radius                       : 0.175 m
+    Max physical steering lock         : 45.0 deg (nominal — right-lock is
+                                          mechanically ~39 deg in practice,
+                                          a real linkage asymmetry, see §9)
+    Min turn radius (derived)          : Wheelbase / tan(45 deg) = 0.80 m
+                                          (used by waypoints.py to flag/clamp
+                                          undrivable turns)
+
+  Note: config.h's older TRACK_WIDTH_M (0.60m) is a leftover from the
+  original open-loop Rover/ project's kinematics — NOT used by anything in
+  the Ackermann pipeline. ACK_TRACK_M (0.65m) is the real, currently-used
+  value. Don't confuse the two.
+
+  Drive motors / gearbox:
+    Motor max RPM (field-measured)     : 500 RPM (was 400, the datasheet
+                                          spec — corrected after a field
+                                          breakaway measurement)
+    Gear ratio                         : 20:1
+    Wheel RPM max (derived)            : 500/20 = 25.0 RPM
+    Encoder                            : 600 PPR, x4 quadrature = 2400
+                                          counts/rev
+
+  Steering actuator: PA-12-300-1500 (identified via web search against
+  the vendor spec — 300mm stroke / 7mm/s / 12V DC / robu.in and equivalent
+  Indian resellers).
+    Rated voltage                      : 12V DC
+    Rated current (loaded)             : ~3.8A
+    Speed, no load / full load         : 7 mm/s / 5.5 mm/s
+    Duty cycle rating                  : 10% (intermittent use only —
+                                          NOT rated for continuous running;
+                                          this is why the centering
+                                          watchdog in §5.3 exists)
+    Mechanism                          : self-locking screw (holds position
+                                          with power off)
+    Minimum moving duty                : NOT published by the manufacturer.
+                                          Field-tuning value currently in
+                                          use: ACT_MIN_DUTY_PCT = 40% (a
+                                          starting guess, not yet verified
+                                          against real breakaway behavior)
+
+  Rear motor driver: Cytron MD10C R3 x2 (one per side), PWM+DIR interface,
+  throttle set via MCP4725 DAC (I2C, 12-bit, 0-4095 = 0-5V) per side.
+
+================================================================================
+  4. FIRMWARE ARCHITECTURE (STM32, Rover_closed_loop/)
+================================================================================
+
+  Module map:
+    main.c          — 20 Hz control loop (see §5 flowchart), owns all
+                       persistent PID/PI state (steer_pid, wheel_pid_L/R)
+                       and the centering watchdog
+    ibus.c/.h       — FlySky iBUS RC decode (USART1, DMA+IDLE), SWD/SWB/SWC
+                       switch decode
+    rpi_link.c/.h   — RPi UART protocol (USART2, DMA+IDLE) — see §6
+    ads1115.c/.h    — ADS1115 external ADC read + raw->angle calibration
+                       (steering potentiometer feedback)
+    actuator.c/.h   — Cytron MD10C PWM+DIR primitive drive for the
+                       steering actuator (SetSpeed/Stop — no control logic,
+                       that lives in main.c step 6)
+    steer_pid.c/.h  — Steering actuator PID (see §5.3) — LIVE as of this
+                       snapshot, was dead code for most of the project
+    ackermann.c/.h  — Electronic differential (Ackermann_ComputeRPM),
+                       motion pipelines Ackermann_Run() (manual/RC) and
+                       Ackermann_RunAuto() (RPi/AUTO) — see §5.2/§5.4
+    wheel_pid.c/.h  — Closed-loop forward wheel-speed PI (see §5.4) —
+                       replaces the old open-loop DAC-guess for forward
+                       driving
+    encoder.c/.h    — TIM2/TIM3 quadrature decode -> wheel RPM
+    motor.c/.h      — Contactor arm/disarm, rear motor GPIO+DAC drive
+                       primitives, brake/coast logic
+
+  Sign convention (used throughout — memorize this):
+    LEFT turn  = POSITIVE steering angle (+)
+    RIGHT turn = NEGATIVE steering angle (-)
+    Joystick Xn > 0 (stick RIGHT) -> target_steer NEGATIVE -> right turn
+    Joystick Xn < 0 (stick LEFT)  -> target_steer POSITIVE -> left turn
+    delta > 0 (left turn) -> right wheel is OUTER -> faster
+
+================================================================================
+  5. MAIN CONTROL LOOP — FLOWCHART (main.c, 20 Hz / 50ms tick)
+================================================================================
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ START OF TICK (every 50ms, driven by the main while(1) loop)         │
+    └───────────────────────────────┬─────────────────────────────────────┘
+                                     ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ 1. Read RC (iBUS, USART1 DMA, updated by IDLE-line interrupt)        │
+    │    -> Xn, Yn (stick), swd_on (arm), auto_mode (SWB), fwd/rev pct     │
+    └───────────────────────────────┬─────────────────────────────────────┘
+                                     ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ 2. Contactor arm/disarm edge-detect + 500ms debounce (motor.c)       │
+    └───────────────────────────────┬─────────────────────────────────────┘
+                                     ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ 3. Compute dt_s from TIM5 (used by every PID/PI below)               │
+    └───────────────────────────────┬─────────────────────────────────────┘
+                                     ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ 4. Read steering potentiometers (ADS1115, I2C1) -> angle_L, angle_R, │
+    │    delta = (angle_L+angle_R)/2                                       │
+    └───────────────────────────────┬─────────────────────────────────────┘
+                                     ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ 5. Ackermann motion pipeline (§5.2/§5.4):                             │
+    │                                                                       │
+    │    Motor_IsArmed() && rc.rc_ok ?                                      │
+    │      NO  -> ack.state = NO_SIGNAL/DISARMED, all outputs zeroed,       │
+    │             wheel_pid_L/R reset                                       │
+    │      YES -> rc.auto_mode (SWB=AUTO)?                                  │
+    │             YES -> rpi_cmd.link_ok?                                   │
+    │                    YES -> Ackermann_RunAuto(steer_target, speed_target)│
+    │                    NO  -> force BRAKE (300ms UART timeout failsafe)   │
+    │             NO  -> Ackermann_Run(Xn, Yn, ...) (manual/RC)             │
+    └───────────────────────────────┬─────────────────────────────────────┘
+                                     ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ 6. Steering actuator control — bang-bang / PID hybrid (§5.3)         │
+    └───────────────────────────────┬─────────────────────────────────────┘
+                                     ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ 7. Drive rear motors — DAC write per side (from step 5's rpm_L/R via │
+    │    wheel_pid.c for forward, open-loop _ToThrottle() for reverse)     │
+    └───────────────────────────────┬─────────────────────────────────────┘
+                                     ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ (RPi link) Send feedback frame to RPi every tick, regardless of      │
+    │  MANUAL/AUTO/armed state — angle_L, angle_R, rpm_L, rpm_R, status    │
+    └───────────────────────────────┬─────────────────────────────────────┘
+                                     ▼
+                              (sleep to next 50ms tick)
+
+--------------------------------------------------------------------------------
+  5.1  RC / Stick Input (§ibus.c)
+--------------------------------------------------------------------------------
+  FlySky iBUS, USART1, 115200, DMA+IDLE framing.
+  Channels used: X (steering stick, IBUS_CH_X=0), Y (throttle stick,
+  IBUS_CH_Y=1), SWC (fwd speed cap, ch4), SWD (arm/disarm, ch5), SWB
+  (MANUAL/AUTO select, ch6, repurposed from its original reverse-speed-cap
+  role — see §7).
+  RC_TIMEOUT_US = 400ms -> RC considered lost if no valid frame in that
+  window (independent failsafe from the RPi-link timeout in §7).
+
+--------------------------------------------------------------------------------
+  5.2  Electronic Differential — Ackermann_ComputeRPM() (ackermann.c)
+--------------------------------------------------------------------------------
+  Standard bicycle-model Ackermann geometry. Given commanded centerline
+  speed V_base and MEASURED steering angle delta (never the target — this
+  matters, see below):
+
+    if |delta| < ACK_STRAIGHT_DEG (3.0 deg):        # avoid tan(0) singularity
+        V_left  = V_base
+        V_right = V_base
+    else:
+        delta_rad = radians(delta)
+        R_c = ACK_WHEELBASE_M / tan(delta_rad)        # turning radius about rear axle
+        V_right = V_base * (1 + ACK_TRACK_M / (2*R_c))
+        V_left  = V_base * (1 - ACK_TRACK_M / (2*R_c))
+
+    circumference = 2*pi*WHEEL_RADIUS_M
+    rpm_L = (V_left  / circumference) * 60
+    rpm_R = (V_right / circumference) * 60
+
+    # Proportional scaling: if either wheel's |rpm| exceeds the active
+    # ceiling (WHEEL_RPM_MAX=25 forward, THR_REV_RPM_CAP=10 reverse),
+    # scale BOTH wheels down by the same factor — preserves the
+    # differential ratio instead of clipping one wheel asymmetrically.
+
+  IMPORTANT: this runs off the MEASURED angle (steer.delta from the ADC),
+  not the commanded target — so the differential always reflects reality,
+  even mid-correction while the actuator is still moving toward target.
+
+--------------------------------------------------------------------------------
+  5.3  Steering Actuator Control (main.c step 6) — bang-bang / PID hybrid
+--------------------------------------------------------------------------------
+  Current design (as of this snapshot — replaced a pure bang-bang design
+  after it was found to cause ~4.3-4.5 deg of approach-direction
+  hysteresis, see §9):
+
+    err = target_steer_deg - steer.delta
+
+    if |err| > STEER_PROP_ZONE_DEG (4.0 deg):
+        Actuator_SetSpeed(100%, direction)      # bang-bang, fast approach
+        SteerPID_Reset()
+    else:
+        # "centered" (stop) decision:
+        if |target_steer_deg| < CENTER_TARGET_EPS (1.0 deg):   # returning to straight
+            per_wheel_ok = |angle_L| <= STEER_DEADBAND_DEG AND
+                           |angle_R| <= STEER_DEADBAND_DEG
+            # watchdog: if per_wheel_ok hasn't been true within
+            # STEER_CENTER_WATCHDOG_US (2.5s) of continuously trying,
+            # fall back to the plain delta check (always satisfiable)
+            centered = per_wheel_ok OR (watchdog expired AND |err| <= STEER_DEADBAND_DEG)
+        else:                                                   # an actual turn
+            centered = |err| <= STEER_DEADBAND_DEG              # delta-only,
+                                                                  # since angle_L
+                                                                  # != angle_R is
+                                                                  # EXPECTED here
+        if centered:
+            Actuator_Stop(); SteerPID_Reset()
+        else:
+            duty = SteerPID_Update(target_steer_deg, steer.delta, dt_s)
+                 # PID: error = target - actual
+                 #      integral += error*dt, clamped to +-(STEER_INTEGRAL_MAX_PCT/Ki)
+                 #      derivative = -(actual - prev_actual)/dt   (ON MEASUREMENT,
+                 #                   avoids kick when the setpoint itself jumps)
+                 #      out = Kp*error + Ki*integral + Kd*derivative, clamped +-100%
+            if 0 < |duty| < ACT_MIN_DUTY_PCT:
+                duty = sign(duty) * ACT_MIN_DUTY_PCT    # stiction floor
+            Actuator_SetSpeed(|duty|, direction from sign(duty))
+
+  Why both angle_L AND angle_R individually (not just their average
+  delta) when returning to straight: two very different per-wheel angles
+  can average to the same delta, hiding a real disagreement between the
+  pots — see §9. Off-center (an actual turn), angle_L != angle_R is
+  EXPECTED (true Ackermann inner/outer divergence), so only the average
+  is checked there.
+
+--------------------------------------------------------------------------------
+  5.4  Rear Wheel Throttle (main.c step 7)
+--------------------------------------------------------------------------------
+  FORWARD driving — closed-loop PI (wheel_pid.c), per wheel independently:
+
+    error = target_rpm - measured_rpm          # measured = previous tick's
+                                                # Encoder_GetRPM_L()/R()
+    integral += error * dt_s
+    clamp integral to +-WHEEL_PID_MAX_INTEGRAL (150.0)
+    correction = Kp*error + Ki*integral        # Kp=50, Ki=15
+    clamp correction to [WHEEL_PID_MIN_CORRECTION (-250), DAC_MAX-THR_FWD_MIN_DAC]
+    dac = THR_FWD_MIN_DAC (1100) + correction, clamped to [0, DAC_MAX(4095)]
+
+  If target_rpm < 0.01: dac=0 AND reset the integral (prevents windup
+  while stopped from kicking the wheel unexpectedly next time it's asked
+  to move).
+
+  REVERSE driving — still the ORIGINAL open-loop map (deliberately not
+  converted):
+    clamped = min(|rpm|, THR_REV_RPM_CAP (10.0))
+    dac = THR_REV_MIN_DAC (1810) + (clamped/THR_REV_RPM_CAP) * (THR_REV_MAX_DAC(2450) - THR_REV_MIN_DAC(1810))
+
+================================================================================
+  6. UART PROTOCOL — RPi <-> STM32 (rpi_link.c / uart_link.py)
+================================================================================
+
+  20 Hz, binary, fixed-size frames, little-endian, USART2 (PA2 TX/PA3 RX),
+  115200 8N1, DMA+IDLE-line framing on the STM32 side.
+
+  Command frame, RPi -> STM32, 8 bytes:
+    byte 0-1  header       0xAA 0x55
+    byte 2-3  int16        steer_target, degrees x100, range -4500..+4500
+    byte 4-5  int16        speed_target, mm/s, signed
+    byte 6    uint8        seq (rolling counter, parsed not yet consumed)
+    byte 7    uint8        checksum = XOR of bytes 0-6
+
+  Feedback frame, STM32 -> RPi, 12 bytes (sent every tick regardless of
+  MANUAL/AUTO/armed state):
+    byte 0-1  header       0xBB 0x66
+    byte 2-3  int16        angle_L, degrees x100
+    byte 4-5  int16        angle_R, degrees x100
+    byte 6-7  int16        rpm_L, RPM x10
+    byte 8-9  int16        rpm_R, RPM x10
+    byte 10   uint8        status bitfield: bit0 ARMED, bit1 STEER_FAULT,
+                            bit2 AUTO_ACTIVE, bit3 RC_OK
+    byte 11   uint8        checksum = XOR of bytes 0-10
+
+================================================================================
+  7. FAILSAFES
+================================================================================
+
+  - RC loss (iBUS): RC_TIMEOUT_US = 400ms without a valid frame -> RC
+    considered lost, motion pipeline forces a safe stop.
+  - RPi link loss while SWB=AUTO: AUTO_UART_TIMEOUT_US = 300ms without a
+    valid command frame -> forced BRAKE, independent of the last command
+    received. SWB back to MANUAL always hands control back to RC sticks
+    immediately, independent of link state.
+  - Contactor arm/disarm: 500ms debounce (CONTACTOR_DEBOUNCE_US) on the
+    SWD switch edge.
+  - Steering sensor fault: STEER_FAULT_THRESHOLD = 5 consecutive
+    bad/insane ADC reads (outside ADC_SANITY_MIN/MAX = 200/32000) ->
+    sensor declared dead, last-good value held.
+  - Steering actuator duty-cycle protection: the centering watchdog
+    (§5.3, STEER_CENTER_WATCHDOG_US = 2.5s) exists specifically because
+    this actuator is rated for only 10% duty cycle — prevents indefinite
+    hunting against an unsatisfiable per-wheel condition from cooking it.
+
+================================================================================
+  8. RPi_COMPANION/ — GUIDANCE & MOTION STACK
+================================================================================
+
+  No RTK/GNSS. Position is dead-reckoned from STM32 encoder feedback +
+  IMU heading only.
+
+--------------------------------------------------------------------------------
+  8.1  Odometry (odometry.py) — dead reckoning + heading lock
+--------------------------------------------------------------------------------
+  Pose (x, y, yaw) updated every tick:
+
+    yaw_math = compass_to_math_rad(imu.heading_deg)   # (90 - heading) mod 360, to radians
+
+    HEADING LOCK (once per mission.py PROCESS, not per mission restart):
+      On the first HEADING_LOCK_SAMPLES (30, ~1.5s @ 20Hz) calls to
+      update(), buffer yaw_math and report pose INVALID / frozen at (0,0).
+      Once 30 samples are collected:
+        yaw_ref = atan2( sum(sin(samples)), sum(cos(samples)) )   # circular mean
+      (Circular mean, not a naive average, to handle 0/360 wraparound
+      correctly.) All subsequent yaw values are reported relative to this
+      fixed reference: pose.yaw = wrap_to_pi(yaw_math - yaw_ref)
+
+      reset() (called on every SWB MANUAL->AUTO transition) re-zeros
+      POSITION ONLY — it deliberately does NOT re-lock the heading
+      reference, so every mission run within one mission.py session shares
+      the same real-world orientation ("compass-referenced", not
+      "start-relative").
+
+    Distance: average of both wheels' encoder speed:
+      v_L = (rpm_L/60) * 2*pi*WHEEL_RADIUS_M
+      v_R = (rpm_R/60) * 2*pi*WHEEL_RADIUS_M
+      d_center = ((v_L+v_R)/2) * dt_s
+      x += d_center * cos(yaw); y += d_center * sin(yaw)
+
+    No absolute position correction (no RTK) — position drift accumulates
+    over a mission's distance/duration. Understood trade-off, not a bug.
+
+--------------------------------------------------------------------------------
+  8.2  Guidance — Pure Pursuit (guidance.py)
+--------------------------------------------------------------------------------
+  Chosen over the old BBB heading-error-PID approach because its output
+  IS a steering angle, mapping directly onto send_command(steer_deg,
+  speed_ms) with no V,W->wheel-RPM conversion needed.
+
+    1. Advance the tracking cursor past waypoints already reached
+       (within WP_REACHED_THRESH_M = 0.25m).
+    2. Find the lookahead point: search forward from the cursor (starting
+       ONE segment behind it, to handle the mission-start-exactly-on-
+       waypoint-0 edge case) for where a circle of radius Ld (LOOKAHEAD_M
+       = 0.8m) centered on the rover intersects the path. Scans EVERY
+       candidate segment and keeps the one with the GREATEST cumulative
+       path progress (not the first match — a stale backward intersection
+       near a waypoint boundary is a real, previously-hit bug otherwise).
+       Falls back to the final waypoint if nothing is found (finishing
+       approach).
+    3. Steering law (the actual textbook Pure Pursuit formula):
+         alpha = wrap_to_pi(atan2(ly-y, lx-x) - yaw)     # heading error to lookahead point
+         curvature = 2*sin(alpha) / Ld_actual
+         steer_deg = degrees(atan(curvature * WHEELBASE_M))
+         clamp to +-MAX_STEER_ANGLE_DEG
+    4. Speed shaping — reduce speed as EITHER heading error (alpha) or
+       cross-track error (cte, signed perpendicular distance to the
+       tracking segment) grows, using their OWN thresholds (NOT the
+       steering law's yaw_bound):
+         alpha_factor = max(MIN_SPEED_FACTOR, 1 - |alpha_deg|/SPEED_ALPHA_FULL_DEG)
+         cte_factor   = max(MIN_SPEED_FACTOR, 1 - |cte|/SPEED_CTE_FULL_M)
+         speed_factor = min(alpha_factor, cte_factor)     # worse-of-two, not a product
+         speed = max(MIN_SPEED_MPS, target_speed * speed_factor)
+
+--------------------------------------------------------------------------------
+  8.3  Path Generation (waypoints.py) & Mission Runner (mission.py)
+--------------------------------------------------------------------------------
+  waypoints.py generates straight/rectangle/circle/lawnmower paths (CSV:
+  x, y, speed_mps), spacing SPACING_STRAIGHT_M=1.0m / SPACING_CURVE_M=0.3m.
+  Clamps lawnmower row-turn radius to MIN_TURN_RADIUS_M rather than
+  silently emitting an undrivable path.
+
+  mission.py is the runnable entry point: always computes and sends
+  commands at 20Hz regardless of SWB position (matches the STM32 side's
+  "ignore AUTO commands unless SWB is AUTO" design — inert while MANUAL,
+  not idle), treats SWB's MANUAL->AUTO transition as the mission-(re)start
+  trigger. Auto-archives each run's path (logs/mission_<ts>_path.csv) and
+  logs a 31-column telemetry CSV (logs/mission_<ts>.csv) every tick:
+
+    t_s, x_m, y_m, yaw_deg, steer_cmd_deg, speed_cmd_ms, cte_m, alpha_deg,
+    lookahead_x_m, lookahead_y_m, target_idx, mission_finished,
+    angle_L_deg, angle_R_deg, rpm_L, rpm_R, armed, auto_active, rc_ok,
+    steer_fault, link_ok, imu_heading_deg, imu_roll_deg, imu_pitch_deg,
+    imu_gyro_z_rads, imu_accel_x_ms2, imu_accel_y_ms2, imu_calib_sys,
+    imu_calib_gyro, imu_calib_accel, imu_calib_mag, imu_valid
+
+  Interactive per-shape path generators (prompt for dimensions, save to
+  paths/<shape>_<dims>.csv): make_straight_path.py, make_rectangle_path.py,
+  make_circle_path.py, make_lawnmower_path.py, sharing path_prompts.py.
+
+--------------------------------------------------------------------------------
+  8.4  IMU (imu.py) — DFRobot Fermion BNO055
+--------------------------------------------------------------------------------
+  I2C1 (GPIO2/GPIO3, RPi's board.I2C()). Default NDOF fusion mode.
+  is_fully_calibrated() checks gyro==3 AND accel==3 ONLY — mag is
+  deliberately excluded (known to drift with local field distortion, see
+  §9). Holds the last valid sample across transient I2C glitches;
+  IMU_FAULT_THRESHOLD = 5 consecutive bad reads before reporting invalid.
+
+--------------------------------------------------------------------------------
+  8.5  Steering Pot Recalibration Tool (calibrate_steering_pots.py)
+--------------------------------------------------------------------------------
+  Live angle_L/angle_R/delta readout over the existing UART link (no new
+  firmware/protocol needed). Walks full-left-lock / full-right-lock /
+  center (non-blocking Enter-to-capture); recovers the true raw ADC value
+  at each captured position by exactly inverting ads1115.c's
+  _MapToAngle() formula using the CURRENT firmware constants (hardcoded
+  in the script, must be kept in sync with ackermann_config.h by hand).
+  Prints new ADC_L/R_MIN/CENTER/MAX_RAW values to paste into
+  ackermann_config.h. See §9 for calibration status.
+
+================================================================================
+  9. KNOWN OPEN ISSUES (as of this snapshot)
+================================================================================
+
+  1. INTERMITTENT HEADING-LOCK BIAS. BNO055 magnetometer never
+     calibrates on this chassis (imu_calib_mag/imu_calib_sys read 0 in
+     every field log collected — plausibly motor/DAC interference), yet
+     NDOF fusion still blends it into heading_deg. A bad lock steers an
+     entire mission one way (cte_m/steer_cmd_deg pinned to one sign the
+     whole run). Mitigated (§8.1's 30-sample circular-mean averaging), not
+     fixed — a sustained bias present for the whole averaging window would
+     average right through it. NEXT STEPS IF IT RECURS: switch BNO055 to
+     IMUPLUS mode (drops magnetometer from fusion entirely, trades
+     absolute heading for gyro-drift immunity), or physically relocate the
+     IMU away from the motors/DAC.
+
+  2. STEERING POT L/R CALIBRATION MISMATCH. angle_L/angle_R disagree by
+     ~0.6-1.6 deg even at commanded-straight (where true Ackermann
+     geometry says they should match exactly — inner/outer divergence
+     only applies mid-turn). Currently DEPLOYED calibration (in
+     ackermann_config.h right now) is the ORIGINAL, more-mismatched set
+     (ADC_L_CENTER_RAW=4426, ADC_R_CENTER_RAW=3167 — see §10 for exact
+     current values). Two field recalibration attempts with
+     calibrate_steering_pots.py were run but NOT YET committed — the
+     actuator hysteresis below was making "center" hard to measure
+     repeatably (the two attempts disagreed with each other by ~2.9 deg),
+     so that was fixed first. RE-RUN THE RECALIBRATION now that centering
+     should be far more repeatable, and commit the resulting 6 values.
+
+  3. ACTUATOR APPROACH-DIRECTION HYSTERESIS — fix implemented, NOT YET
+     FIELD-VERIFIED. Settling to commanded-zero from full-left-lock vs.
+     full-right-lock left the wheels ~4.3-4.5 deg apart under the OLD pure
+     bang-bang control (confirmed independent of pot calibration — the
+     same gap persisted when re-mapped through a freshly recalibrated pot
+     mapping). The bang-bang/PID hybrid in §5.3 is the fix; awaiting
+     rebuild + reflash + field retest to confirm it actually shrinks the
+     gap. If the actuator hunts/oscillates at the new tighter
+     STEER_DEADBAND_DEG (1.5 deg), widen it back toward 2.5 deg before
+     changing anything else.
+
+  4. STEERING LOCK ASYMMETRY. Full left lock reads ~+42-45 deg, full
+     right lock only reaches ~-39 to -42 deg under the current
+     calibration — the physical linkage's right-side travel is genuinely
+     shorter than the left's (mechanical, likely the actuator pushing
+     against a hard stop before reaching the assumed 45 deg on that side).
+     Not a software bug; flagged by the user as a candidate for the next
+     hardware revision, not addressed in software.
+
+  5. ACT_MIN_DUTY_PCT (40%) is a STARTING GUESS, not a field-measured
+     value — this actuator has no published minimum-moving-duty spec.
+     Same situation THR_FWD_MIN_DAC was in before it was corrected from
+     real breakaway data; expect this to need the same treatment.
+
+  6. KP_STEER/KI_STEER/KD_STEER (5.0/0.1/0.5) are untouched BBB-ported
+     gains, now genuinely exercised on this hardware for the first time as
+     of the §5.3 redesign. Not tuned for this actuator/deadband regime —
+     expect retuning once field data exists.
+
+  7. MIN_SPEED_MPS (0.12) has not been directly exercised/confirmed on
+     real hardware for a sustained stretch — no field run has held speed
+     down at that floor for long enough to confirm the wheels keep turning
+     rather than stalling. Provisional.
+
+================================================================================
+  10. CURRENT CONFIGURATION VALUES — FULL DUMP
+================================================================================
+
+  --- STM32 firmware: Core/Inc/config.h ---
+  WHEEL_RADIUS_M          0.175       (m)
+  TRACK_WIDTH_M           0.60        (m — UNUSED by Ackermann pipeline, see §3)
+  VMAX_MS                 0.366       (m/s — forward speed cap)
+  WMAX_RADS               1.22        (rad/s — unused by Ackermann pipeline)
+  MOTOR_RPM_MAX           500.0       (field-measured true max)
+  GEAR_RATIO              20.0
+  WHEEL_RPM_MAX           25.0        (= MOTOR_RPM_MAX/GEAR_RATIO, derived)
+  ENCODER_PPR             600
+  ENCODER_COUNTS_REV      2400        (600 x 4 quadrature edges)
+  ENC_STOPPED_US          500000      (500ms no-pulse -> report 0 RPM)
+  LOOP_HZ                 20
+  LOOP_PERIOD_US          50000       (50ms)
+  CONTACTOR_DEBOUNCE_US   500000      (500ms)
+  RC_TIMEOUT_US           400000      (400ms)
+  DAC_MAX                 4095        (12-bit)
+  DAC_LEFT_ADDR           0x61
+  DAC_RIGHT_ADDR          0x60
+  SWB_THRESH              1500        (MANUAL below, AUTO at/above)
+  SWD_THRESH              1450        (arm/disarm)
+  RPI_LINK_BAUD           115200
+  AUTO_UART_TIMEOUT_US    300000      (300ms)
+  ACTUATOR_PWM_MAX        999         (TIM1 ARR, matches ACT_PWM_ARR)
+
+  --- STM32 firmware: Core/Inc/ackermann_config.h ---
+  ACK_WHEELBASE_M         0.80        (m)
+  ACK_TRACK_M             0.65        (m)
+  MAX_STEER_ANGLE_DEG     45.0        (deg — nominal, see §9 issue 4)
+  STEER_DEADBAND_DEG      1.5         (deg — narrowed from 2.5, see §9)
+  ACK_STRAIGHT_DEG        3.0         (deg — differential "treat as straight" cutoff)
+  KP_STEER / KI_STEER / KD_STEER   5.0 / 0.1 / 0.5   (BBB-ported, untuned — §9)
+  STEER_INTEGRAL_MAX_PCT  50.0        (%)
+  STEER_PROP_ZONE_DEG     4.0         (deg — bang-bang beyond this, PID inside)
+  ACT_MIN_DUTY_PCT        40.0        (% — starting guess, §9)
+  CENTER_TARGET_EPS       1.0         (deg — per-wheel check trigger threshold)
+  STEER_CENTER_WATCHDOG_US 2500000    (2.5s)
+  ADS1115_I2C_ADDR        0x48
+  ADC_L_MIN_RAW / ADC_L_CENTER_RAW / ADC_L_MAX_RAW    3096 / 4426 / 5793
+  ADC_R_MIN_RAW / ADC_R_CENTER_RAW / ADC_R_MAX_RAW    2124 / 3167 / 4160
+     (CURRENTLY DEPLOYED values — a recalibration is pending, see §9 issue 2)
+  ADC_SANITY_MIN / ADC_SANITY_MAX      200 / 32000
+  STEER_FAULT_THRESHOLD   5
+  ACT_PWM_ARR             999
+  THR_FWD_MIN_DAC         1100        (PI starting floor, not precision-critical)
+  THR_REV_MIN_DAC         1810
+  THR_REV_MAX_DAC         2450
+  THR_REV_RPM_CAP         10.0        (RPM)
+  KP_WHEEL / KI_WHEEL     50.0 / 15.0
+  WHEEL_PID_MAX_INTEGRAL  150.0
+  WHEEL_PID_MIN_CORRECTION -250.0
+  PIVOT_LOCK_FRACTION     0.80
+  PIVOT_OUTER_RPM / PIVOT_INNER_RPM    10.0 / 6.0
+  ACK_STICK_DEADBAND      0.05
+  AUTO_SPEED_DEADBAND_MS  0.03        (m/s)
+
+  --- RPi_companion/rover_config.py ---
+  WHEELBASE_M             0.80        (m — mirrors ACK_WHEELBASE_M)
+  MAX_STEER_ANGLE_DEG     45.0
+  WHEEL_RADIUS_M          0.175
+  MIN_TURN_RADIUS_M       0.80        (m, derived: Wb/tan(45))
+  SPACING_STRAIGHT_M      1.0         (m)
+  SPACING_CURVE_M         0.3         (m)
+  LAWNMOWER_ROW_SPACING_M 1.0         (m)
+  LOOKAHEAD_M             0.8         (m, Pure Pursuit Ld)
+  WP_REACHED_THRESH_M     0.25        (m)
+  YAW_BOUND_DEG           25.0        (deg — STEERING law clamp only)
+  HEADING_LOCK_SAMPLES    30          (ticks @ 20Hz = 1.5s averaging window)
+  CRUISE_SPEED_MPS        0.24        (m/s — history: 0.2 -> 0.12 -> 0.24)
+  MIN_SPEED_MPS           0.12        (m/s — provisional, see §9 issue 7)
+  SPEED_ALPHA_FULL_DEG    60.0        (deg)
+  SPEED_CTE_FULL_M        0.8         (= LOOKAHEAD_M)
+  MIN_SPEED_FACTOR        0.3
+
+================================================================================
+  11. FILE REFERENCE
+================================================================================
+
+  STM32 (Rover_closed_loop/Core/Src|Inc/):
+    main.c              20Hz control loop, all persistent PID/PI state
+    ibus.c/.h           RC decode (USART1)
+    rpi_link.c/.h       RPi UART protocol (USART2)
+    ads1115.c/.h        Steering pot ADC read + calibration
+    actuator.c/.h       Steering actuator PWM+DIR primitives
+    steer_pid.c/.h      Steering actuator PID (now live)
+    ackermann.c/.h      Electronic differential + motion pipelines
+    wheel_pid.c/.h      Closed-loop forward wheel-speed PI
+    encoder.c/.h        Quadrature decode
+    motor.c/.h          Contactor + rear motor primitives
+    config.h            Base rover/motor/timing/DAC/iBUS constants
+    ackermann_config.h  Ackermann/steering-specific constants (additive to config.h)
+
+  RPi (RPi_companion/):
+    mission.py                  Runnable entry point
+    odometry.py                 Dead-reckoning pose + heading lock
+    guidance.py                 Pure Pursuit
+    waypoints.py                Path generators + CSV I/O
+    rover_config.py             Shared RPi-side tunables
+    uart_link.py                STM32Link — RPi-side protocol counterpart
+    imu.py / test_imu.py / calibrate_imu.py    BNO055 driver + calibration ritual
+    calibrate_steering_pots.py  Steering pot field recalibration tool
+    check_stm32_link.py         UART connectivity diagnostic
+    read_encoders.py            Passive live RPM/angle readout
+    make_straight_path.py, make_rectangle_path.py, make_circle_path.py,
+    make_lawnmower_path.py, path_prompts.py    Interactive path generators
+
+================================================================================
+  CHANGE LOG (this file)
+================================================================================
+
+  2026-09-17  Initial creation. Full snapshot of Rover_closed_loop/ +
+              RPi_companion/ as of the actuator bang-bang/PID redesign,
+              the heading-lock averaging fix, WHEEL_RPM_MAX correction,
+              and the pending steering-pot recalibration.
+
+  -- Add new dated entries above this line as the system changes. Edit the
+     relevant section above rather than rewriting the whole file, and bump
+     the "Snapshot date" at the very top. --
