@@ -142,7 +142,7 @@
     Duty cycle rating                  : 10% (intermittent use only —
                                           NOT rated for continuous running;
                                           this is why the centering
-                                          watchdog in §5.3 exists)
+                                          watchdog in §5.5 exists)
     Mechanism                          : self-locking screw (holds position
                                           with power off)
     Minimum moving duty                : NOT published by the manufacturer.
@@ -170,12 +170,12 @@
     actuator.c/.h   — Cytron MD10C PWM+DIR primitive drive for the
                        steering actuator (SetSpeed/Stop — no control logic,
                        that lives in main.c step 6)
-    steer_pid.c/.h  — Steering actuator PID (see §5.3) — LIVE as of this
+    steer_pid.c/.h  — Steering actuator PID (see §5.5) — LIVE as of this
                        snapshot, was dead code for most of the project
-    ackermann.c/.h  — Electronic differential (Ackermann_ComputeRPM),
-                       motion pipelines Ackermann_Run() (manual/RC) and
-                       Ackermann_RunAuto() (RPi/AUTO) — see §5.2/§5.4
-    wheel_pid.c/.h  — Closed-loop forward wheel-speed PI (see §5.4) —
+    ackermann.c/.h  — Electronic differential (Ackermann_ComputeRPM, §5.2),
+                       motion pipelines Ackermann_Run() (manual/RC, §5.3)
+                       and Ackermann_RunAuto() (RPi/AUTO, §5.4)
+    wheel_pid.c/.h  — Closed-loop forward wheel-speed PI (see §5.6) —
                        replaces the old open-loop DAC-guess for forward
                        driving
     encoder.c/.h    — TIM2/TIM3 quadrature decode -> wheel RPM
@@ -216,7 +216,7 @@
     └───────────────────────────────┬─────────────────────────────────────┘
                                      ▼
     ┌─────────────────────────────────────────────────────────────────────┐
-    │ 5. Ackermann motion pipeline (§5.2/§5.4):                             │
+    │ 5. Ackermann motion pipeline (§5.2-§5.4):                             │
     │                                                                       │
     │    Motor_IsArmed() && rc.rc_ok ?                                      │
     │      NO  -> ack.state = NO_SIGNAL/DISARMED, all outputs zeroed,       │
@@ -229,7 +229,7 @@
     └───────────────────────────────┬─────────────────────────────────────┘
                                      ▼
     ┌─────────────────────────────────────────────────────────────────────┐
-    │ 6. Steering actuator control — bang-bang / PID hybrid (§5.3)         │
+    │ 6. Steering actuator control — bang-bang / PID hybrid (§5.5)         │
     └───────────────────────────────┬─────────────────────────────────────┘
                                      ▼
     ┌─────────────────────────────────────────────────────────────────────┐
@@ -245,13 +245,46 @@
                               (sleep to next 50ms tick)
 
 --------------------------------------------------------------------------------
-  5.1  RC / Stick Input (§ibus.c)
+  5.1  RC / Stick Input, in depth (ibus.c)
 --------------------------------------------------------------------------------
-  FlySky iBUS, USART1, 115200, DMA+IDLE framing.
+  FlySky iBUS, USART1, 115200, DMA+IDLE framing (decoded in the USART1
+  IDLE-line ISR, latest values read by the main loop each tick — no
+  polling/blocking involved).
+
   Channels used: X (steering stick, IBUS_CH_X=0), Y (throttle stick,
-  IBUS_CH_Y=1), SWC (fwd speed cap, ch4), SWD (arm/disarm, ch5), SWB
-  (MANUAL/AUTO select, ch6, repurposed from its original reverse-speed-cap
-  role — see §7).
+  IBUS_CH_Y=1), SWC (fwd speed cap, ch4, 3-position), SWD (arm/disarm,
+  ch5), SWB (MANUAL/AUTO select, ch6, repurposed from its original
+  reverse-speed-cap role — see §7).
+
+  Raw-to-normalized stick conversion, _ToFloat() in ibus.c — this is
+  EXACTLY how Xn/Yn (fed into Ackermann_Run(), §5.3) are derived from the
+  raw 1000-2000 PWM-equivalent iBUS channel value:
+
+    raw = clamp(raw, IBUS_VAL_MIN(1000), IBUS_VAL_MAX(2000))
+    diff = raw - IBUS_VAL_MID(1500)                      # signed
+    if raw < MID:  norm = diff / (MID - MIN)             # -1.0 .. 0.0
+    else:          norm = diff / (MAX - MID)             #  0.0 .. +1.0
+    if |norm| < DEADBAND (0.05):  norm = 0.0              # flat deadband, center only
+
+  This is a PLAIN LINEAR mapping with a flat center deadband — NO curve
+  shaping (no exponential/cubic response curve applied to the stick).
+  Note: config.h's EPSILON/MIN_RATIO/SPOT_RPM constants ARE used for a
+  curve-shaping + heading-error mixing scheme, but only inside
+  pipeline.c/kinematics.c — files that physically exist in
+  Rover_closed_loop/Core/Src/ but are NEVER CALLED from main.c (grep
+  confirms it — main.c only ever calls Ackermann_Run()/Ackermann_RunAuto()
+  for motion). Those two files are leftover from the original open-loop
+  Rover/ project and are dead code in this build — don't mistake them for
+  live logic when reading the source.
+
+  SWC (3-position) -> forward speed cap, _SwcToSpeed():
+    raw < SWC_THRESH_LO (1250)  -> SWC_SPEED_LOW  (0.30)
+    raw < SWC_THRESH_HI (1750)  -> SWC_SPEED_MID  (0.60)
+    else                        -> SWC_SPEED_HIGH (1.00)
+  rev_speed_pct is hardcoded to 1.0 (fixed) — SWB used to cap reverse
+  speed in the original design but was repurposed for MANUAL/AUTO select
+  (§7), so reverse now always runs at the same cap forward could reach.
+
   RC_TIMEOUT_US = 400ms -> RC considered lost if no valid frame in that
   window (independent failsafe from the RPi-link timeout in §7).
 
@@ -285,7 +318,160 @@
   even mid-correction while the actuator is still moving toward target.
 
 --------------------------------------------------------------------------------
-  5.3  Steering Actuator Control (main.c step 6) — bang-bang / PID hybrid
+  5.3  MANUAL/RC Motion Pipeline, in full — Ackermann_Run() (ackermann.c)
+--------------------------------------------------------------------------------
+  This is the complete open-loop-from-the-operator's-perspective pipeline
+  that turns raw joystick input into the target steering angle and target
+  speed for every driving mode the RC transmitter can command — the full
+  basic-to-advanced movement flow requested for this doc. It's a small
+  state machine with THREE mutually exclusive branches, checked in this
+  order every tick:
+
+  --- Safe default (always set first) ---
+    state = BRAKE, target_steer_deg = 0, V_base = 0, rpm_L=rpm_R=0, dac_L=dac_R=0
+    if !rc_ok: return here immediately (RC lost -> full stop, nothing further runs)
+
+  --- BRANCH 1: Standstill steering / pivot mode ---
+    Condition: |Yn| < ACK_STICK_DEADBAND (0.05) AND |Xn| > ACK_STICK_DEADBAND
+               (throttle stick centered, steering stick deflected)
+
+    target_steer_deg = -Xn * MAX_STEER_ANGLE_DEG
+      (PROPORTIONAL to stick deflection, same formula as normal driving
+       below — NOT snapped to full lock. A 25% stick deflection steers to
+       25% of MAX_STEER_ANGLE_DEG and holds there. This was itself a fixed
+       bug early on: the standstill branch used to hard-snap to full lock
+       for ANY deflection past the deadband, which felt wrong and also
+       meant the pivot-lock threshold below could only ever be tested at
+       full-lock, not gradually.)
+
+    lock_achieved = |delta_actual_deg (MEASURED)| >= PIVOT_LOCK_FRACTION(0.80) * MAX_STEER_ANGLE_DEG
+      (i.e. the front wheels have PHYSICALLY reached at least 80% of max
+       lock — 36 deg at the nominal 45 deg max)
+
+    if lock_achieved:
+        if Xn < 0 (stick left):   # Pivot Left
+            rpm_L = PIVOT_INNER_RPM (6.0)   # inner wheel crawls
+            rpm_R = PIVOT_OUTER_RPM (10.0)  # outer wheel drives faster
+            state = PIVOT_LEFT
+        else:                     # Pivot Right
+            rpm_L = PIVOT_OUTER_RPM (10.0)
+            rpm_R = PIVOT_INNER_RPM (6.0)
+            state = PIVOT_RIGHT
+        both wheels' DAC via the closed-loop PI (§5.6) — pivot is always
+        forward, both directions, so it always goes through the PI path,
+        never the open-loop reverse map.
+    else (steering toward lock, not there yet):
+        rpm_L = rpm_R = 0, dac_L = dac_R = 0, both wheel PIs reset
+        state = PIVOT_LEFT or PIVOT_RIGHT (whichever direction is being
+                approached) — so the operator/telemetry can see a pivot
+                is being SET UP even before drive engages
+    Either way: return here — normal driving logic below never runs in
+    this branch.
+
+    In short: this is NOT a true stationary "spin in place" pivot — both
+    rear wheels roll forward the whole time (outer faster than inner) to
+    carve a tight arc around the fully-locked front wheels, rather than
+    one side stopped and the other driving. Genuinely stationary pivot
+    (one side actually still or reversed) is not implemented.
+
+  --- BRANCH 2: Neutral sticks -> brake ---
+    Condition: |Yn| < ACK_STICK_DEADBAND AND |Xn| < ACK_STICK_DEADBAND
+               (both sticks centered)
+    Both wheel PIs reset, state = BRAKE, return. This is the everyday
+    "stick, released" resting state.
+
+  --- BRANCH 3: Normal driving ---
+    Condition: everything else (throttle stick meaningfully deflected,
+    with or without steering)
+
+    going_fwd = (Yn > 0)
+    safe_pct  = going_fwd ? fwd_speed_pct : rev_speed_pct   # from SWC / fixed 1.0, §5.1
+    v_max_dir = going_fwd ? VMAX_MS (0.366) : VMAX_REV_MS (derived from
+                THR_REV_RPM_CAP=10 RPM and wheel geometry)
+    V_base    = Yn * v_max_dir * safe_pct                    # signed centerline speed
+
+    target_steer_deg = -Xn * MAX_STEER_ANGLE_DEG              # same linear
+                        mapping as the standstill branch — steering
+                        response is IDENTICAL whether or not the throttle
+                        is also being used; only the drive logic differs
+
+    Ackermann_ComputeRPM(V_base, delta_actual_deg /*MEASURED*/, is_reverse,
+                        -> rpm_L, rpm_R)                      # §5.2
+
+    if going_fwd:  dac_L/R via the closed-loop wheel-speed PI (§5.6)
+    else:          dac_L/R via the ORIGINAL open-loop map (§5.6) — reverse
+                   was deliberately never converted to closed-loop
+
+    State classification (for telemetry/status only — doesn't feed back
+    into any control decision), based on the MEASURED angle at ±5 deg
+    thresholds (independent of, and wider than, STEER_DEADBAND_DEG):
+      going_fwd:  delta > +5   -> FWD_LEFT
+                  delta < -5   -> FWD_RIGHT
+                  else         -> FWD
+      going_rev:  delta > +5   -> REV_LEFT
+                  delta < -5   -> REV_RIGHT
+                  else         -> REV
+
+  Full AckState_t enum (ackermann.h): BRAKE, FWD, FWD_LEFT, FWD_RIGHT, REV,
+  REV_LEFT, REV_RIGHT, PIVOT_LEFT, PIVOT_RIGHT, DISARMED, NO_SIGNAL.
+  DISARMED/NO_SIGNAL are set directly in main.c step 5 (not inside
+  Ackermann_Run() itself) when Motor_IsArmed()/rc.rc_ok fail before
+  Ackermann_Run() is even called — see the step 5 flowchart box above.
+
+  Basic-to-advanced movement summary, tying it together:
+    - Stick centered                        -> BRAKE (branch 2)
+    - Throttle only (Xn~0, Yn!=0)            -> straight fwd/rev at a speed
+                                                proportional to Yn (branch 3,
+                                                delta stays under
+                                                ACK_STRAIGHT_DEG so both
+                                                wheels get equal RPM)
+    - Throttle + steering (both nonzero)     -> curved fwd/rev, electronic
+                                                differential applies a real
+                                                L/R RPM split proportional
+                                                to the MEASURED turn radius
+                                                (branch 3)
+    - Steering only, stick held near its own
+      extreme (Yn~0, |Xn| large)             -> front wheels swing toward
+                                                full lock; once they
+                                                physically reach 80% of it,
+                                                both rear wheels start
+                                                crawling forward to pivot
+                                                tightly (branch 1)
+    - Steering only, stick NOT near extreme  -> front wheels hold at that
+                                                proportional angle, no
+                                                drive at all (branch 1,
+                                                lock not yet achieved)
+
+--------------------------------------------------------------------------------
+  5.4  AUTONOMOUS Motion Pipeline — Ackermann_RunAuto() (ackermann.c)
+--------------------------------------------------------------------------------
+  The RPi's counterpart to §5.3 — takes the RPi's ABSOLUTE physical
+  targets (steer_target_deg, speed_target_ms) instead of joystick Xn/Yn,
+  bypassing ALL of §5.3's stick deadband/pivot logic entirely (an RPi
+  target isn't a human hand and shouldn't be filtered like one — there is
+  no standstill-pivot mode in AUTO, and no separate SWC speed cap).
+
+    clamp steer_target_deg to +-MAX_STEER_ANGLE_DEG    # RPi float isn't
+                                                        # pre-bounded like
+                                                        # a joystick is
+    if |speed_target_ms| < AUTO_SPEED_DEADBAND_MS (0.03):
+        brake (both wheel PIs reset), return            # mirrors branch 2
+
+    going_fwd = (speed_target_ms > 0)
+    v_max_dir = going_fwd ? VMAX_MS : VMAX_REV_MS
+    V_base = speed_target_ms, clamped to +-v_max_dir
+
+    From here it's IDENTICAL to §5.3's normal-driving branch: same
+    Ackermann_ComputeRPM() call off the measured angle, same
+    forward-PI/reverse-open-loop split, same +-5 deg state classification.
+
+  So in AUTO mode there are only two effective states: "driving toward
+  the commanded target" (normal-driving logic) or "braked" (speed
+  deadband) — no pivot mode, since Pure Pursuit (§8.2) never commands a
+  standstill-turn maneuver.
+
+--------------------------------------------------------------------------------
+  5.5  Steering Actuator Control (main.c step 6) — bang-bang / PID hybrid
 --------------------------------------------------------------------------------
   Current design (as of this snapshot — replaced a pure bang-bang design
   after it was found to cause ~4.3-4.5 deg of approach-direction
@@ -331,7 +517,7 @@
   is checked there.
 
 --------------------------------------------------------------------------------
-  5.4  Rear Wheel Throttle (main.c step 7)
+  5.6  Rear Wheel Throttle (main.c step 7)
 --------------------------------------------------------------------------------
   FORWARD driving — closed-loop PI (wheel_pid.c), per wheel independently:
 
@@ -393,7 +579,7 @@
     bad/insane ADC reads (outside ADC_SANITY_MIN/MAX = 200/32000) ->
     sensor declared dead, last-good value held.
   - Steering actuator duty-cycle protection: the centering watchdog
-    (§5.3, STEER_CENTER_WATCHDOG_US = 2.5s) exists specifically because
+    (§5.5, STEER_CENTER_WATCHDOG_US = 2.5s) exists specifically because
     this actuator is rated for only 10% duty cycle — prevents indefinite
     hunting against an unsatisfiable per-wheel condition from cooking it.
 
@@ -548,7 +734,7 @@
      full-right-lock left the wheels ~4.3-4.5 deg apart under the OLD pure
      bang-bang control (confirmed independent of pot calibration — the
      same gap persisted when re-mapped through a freshly recalibrated pot
-     mapping). The bang-bang/PID hybrid in §5.3 is the fix; awaiting
+     mapping). The bang-bang/PID hybrid in §5.5 is the fix; awaiting
      rebuild + reflash + field retest to confirm it actually shrinks the
      gap. If the actuator hunts/oscillates at the new tighter
      STEER_DEADBAND_DEG (1.5 deg), widen it back toward 2.5 deg before
@@ -569,7 +755,7 @@
 
   6. KP_STEER/KI_STEER/KD_STEER (5.0/0.1/0.5) are untouched BBB-ported
      gains, now genuinely exercised on this hardware for the first time as
-     of the §5.3 redesign. Not tuned for this actuator/deadband regime —
+     of the §5.5 redesign. Not tuned for this actuator/deadband regime —
      expect retuning once field data exists.
 
   7. MIN_SPEED_MPS (0.12) has not been directly exercised/confirmed on
@@ -694,6 +880,21 @@
               RPi_companion/ as of the actuator bang-bang/PID redesign,
               the heading-lock averaging fix, WHEEL_RPM_MAX correction,
               and the pending steering-pot recalibration.
+
+  2026-09-17  Added §5.3 (full MANUAL/RC Ackermann_Run() state machine —
+              standstill/pivot steering, neutral brake, normal driving,
+              state classification) and §5.4 (Ackermann_RunAuto(), for
+              symmetry) — the initial version only covered the electronic
+              differential generically and the RPi/AUTO side in depth,
+              not the complete open-loop-from-the-operator manual pipeline.
+              Expanded §5.1 with the exact Xn/Yn stick-to-float mapping
+              (ibus.c's _ToFloat()) and flagged that pipeline.c/kinematics.c
+              (which DO contain curve-shaping constants like EPSILON/
+              MIN_RATIO/SPOT_RPM) are dead code in this build — main.c
+              never calls them, only Ackermann_Run()/Ackermann_RunAuto().
+              Renumbered the old §5.3/§5.4 (actuator control / wheel
+              throttle) to §5.5/§5.6 accordingly; all cross-references
+              elsewhere in this file updated to match.
 
   -- Add new dated entries above this line as the system changes. Edit the
      relevant section above rather than rewriting the whole file, and bump
