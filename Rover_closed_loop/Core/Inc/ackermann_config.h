@@ -104,13 +104,29 @@
  * first correction's theory — 15% may be BELOW this actuator's real
  * breakaway torque (self-locking screw drive), so it just chatters/buzzes
  * in place rather than cleanly moving and settling, instead of 40%
- * overshooting the deadband. Raised to 70.0f to test that directly: if
- * this settles the wobble, it confirms insufficient torque was the cause;
- * if the wobble gets WORSE/faster at 70%, that instead confirms the
- * original overshoot theory and this should come back down (well below
- * 15%, not just to it) with KP_STEER also revisited. Either outcome is
- * useful data — still not a measured value either way. */
-#define ACT_MIN_DUTY_PCT        70.0f
+ * overshooting the deadband. Raised to 70.0f to test that directly.
+ *
+ * RESULT: wobble got WORSE at 70%, not better — confirms the ORIGINAL
+ * overshoot theory (any floor this size relative to a 1.5 deg deadband
+ * overshoots straight back out the other side every correction), not the
+ * insufficient-torque theory. Floor removed entirely (0.0f) — the
+ * `fabsf(duty) < ACT_MIN_DUTY_PCT` check in the caller (main.c step 6)
+ * becomes unsatisfiable at 0.0f (fabsf() is never negative), so this is a
+ * true no-op: the PID's raw output drives the actuator directly, however
+ * small, with nothing forcing it up to a floor at all.
+ *
+ * ⚠️ Expected trade-off: very close to target, the PID's own output can
+ * legitimately be smaller than this actuator's real static friction and
+ * fail to move it at all — the ORIGINAL reason a floor was added in the
+ * first place. If the actuator now stalls a bit short of the deadband
+ * instead of wobbling, that's this trade-off showing up, not a new bug —
+ * the STEER_CENTER_WATCHDOG_US (2.5s) fallback to the plain delta check
+ * exists to bound exactly that case so it doesn't hang forever. If it
+ * still doesn't settle acceptably, the next lever is KP_STEER (currently
+ * 5.0, untuned BBB-ported gain) — a smaller Kp reaching the same duty
+ * over a wider error band, rather than a floor forcing a jump, may be
+ * the more correct fix than any floor value. */
+#define ACT_MIN_DUTY_PCT        0.0f
 
 /* How close |target_steer_deg| must be to 0 before the "centered" check
  * requires BOTH angle_L and angle_R individually within STEER_DEADBAND_DEG,

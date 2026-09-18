@@ -345,6 +345,8 @@ User flashed §3.16's redesign and reported: *"the linear actuator is wobbling a
 
 **Update — wobble persisted at 15%.** User proposed the opposite theory: 15% may be *below* this self-locking-screw actuator's real breakaway torque, so it chatters in place rather than cleanly moving, instead of overshooting. Raised `ACT_MIN_DUTY_PCT` to 70 as a direct test — the result discriminates between the two theories (settles = torque theory confirmed; worse/faster = overshoot theory confirmed, reverse direction needed instead). Full trail: scratchpad.md. **Not yet retested.**
 
+**Update — 70% made it worse, not better.** Confirms the original overshoot theory decisively: any floor of meaningful size relative to the 1.5° deadband overshoots back out every correction, and a bigger floor makes it bigger/faster — ruling out insufficient breakaway torque. `ACT_MIN_DUTY_PCT` set to 0 — a true no-op on the floor-clamp, letting the PID's raw output drive the actuator directly. Known, explicitly-flagged trade-off: very close to target the PID's own small output could legitimately be below real static friction and stall short instead of wobbling — expected, bounded by the existing `STEER_CENTER_WATCHDOG_US` fallback, not a new bug. If a stall gap turns out to matter, the next lever is `KP_STEER` itself (untuned), not another floor value. Full trail: scratchpad.md. **Not yet retested.**
+
 ---
 
 ## 4. Version Control
