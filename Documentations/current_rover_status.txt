@@ -147,15 +147,18 @@
                                           with power off)
     Minimum moving duty                : NOT published by the manufacturer.
                                           Field-tuning value currently in
-                                          use: ACT_MIN_DUTY_PCT = 15% (was
-                                          40% — first field flash wobbled/
-                                          oscillated at the zero position,
-                                          since ANY nonzero correction being
-                                          floored to 40% duty was enough to
-                                          overshoot back out the other side
-                                          of the 1.5 deg deadband every
-                                          time. Lowered to 15%, still an
-                                          unverified guess pending retest)
+                                          use: ACT_MIN_DUTY_PCT = 70% (was
+                                          40%, then 15% — both still
+                                          wobbled at the zero position.
+                                          Two competing theories: floor too
+                                          HIGH (overshoots the 1.5 deg
+                                          deadband) vs. floor too LOW
+                                          (below this self-locking screw
+                                          actuator's real breakaway
+                                          torque, so it chatters without
+                                          net movement). Raised to 70% to
+                                          test the second theory directly
+                                          — unverified, pending retest)
 
   Rear motor driver: Cytron MD10C R3 x2 (one per side), PWM+DIR interface,
   throttle set via MCP4725 DAC (I2C, 12-bit, 0-4095 = 0-5V) per side.
@@ -760,15 +763,16 @@
      hardware revision, not addressed in software.
 
   5. ACT_MIN_DUTY_PCT is a STARTING GUESS, not a field-measured value —
-     this actuator has no published minimum-moving-duty spec. The first
-     guess (40%) was FIELD-TESTED AND FOUND WRONG: flooring any nonzero
-     correction up to 40% duty overshot straight back out the other side
-     of the 1.5 deg deadband every time, causing a persistent wobble right
-     at the centered position ("the linear actuator is wobbling at zero
-     position"). Lowered to 15% — still an unverified guess, not yet
-     retested. Same situation THR_FWD_MIN_DAC was in before it needed two
-     rounds of correction from real breakaway data; expect this to need
-     the same kind of iteration.
+     this actuator has no published minimum-moving-duty spec. Two rounds
+     tried so far, BOTH still wobbled at the centered position: 40%
+     (theory: floor too high, overshoots the 1.5 deg deadband every
+     correction) then 15% (still wobbled). Currently 70%, testing the
+     OPPOSITE theory (floor too low — below this self-locking screw
+     actuator's real breakaway torque, so it chatters in place rather
+     than cleanly moving). Whichever theory the 70% test confirms decides
+     which direction to keep iterating in. Same situation THR_FWD_MIN_DAC
+     was in before it needed two rounds of correction from real breakaway
+     data; expect this to need the same kind of iteration, possibly more.
 
   6. KP_STEER/KI_STEER/KD_STEER (5.0/0.1/0.5) are untouched BBB-ported
      gains, now genuinely exercised on this hardware for the first time as
@@ -817,7 +821,7 @@
   KP_STEER / KI_STEER / KD_STEER   5.0 / 0.1 / 0.5   (BBB-ported, untuned — §9)
   STEER_INTEGRAL_MAX_PCT  50.0        (%)
   STEER_PROP_ZONE_DEG     4.0         (deg — bang-bang beyond this, PID inside)
-  ACT_MIN_DUTY_PCT        15.0        (% — was 40.0, caused wobble at center, §9 issue 5)
+  ACT_MIN_DUTY_PCT        70.0        (% — was 40.0 then 15.0, both wobbled, §9 issue 5)
   CENTER_TARGET_EPS       1.0         (deg — per-wheel check trigger threshold)
   STEER_CENTER_WATCHDOG_US 2500000    (2.5s)
   ADS1115_I2C_ADDR        0x48
@@ -919,6 +923,13 @@
               deadband on every small correction; lowered to 15% (still
               unverified, pending retest). Updated §3/§9/§10 and the
               config dump accordingly.
+
+  2026-09-18  Wobble persisted even at ACT_MIN_DUTY_PCT=15%. User proposed
+              the opposite theory (floor too LOW, below this self-locking
+              screw actuator's real breakaway torque, rather than too
+              HIGH/overshooting). Raised to 70% as a direct test of that
+              theory. Updated §3/§9/§10 accordingly. Still unresolved —
+              pending this retest's result.
 
   -- Add new dated entries above this line as the system changes. Edit the
      relevant section above rather than rewriting the whole file, and bump

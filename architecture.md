@@ -343,6 +343,8 @@ User flashed §3.16's redesign and reported: *"the linear actuator is wobbling a
 
 **Fix:** lowered `ACT_MIN_DUTY_PCT` 40→15 in `ackermann_config.h`. Still not a measured value — if wobble persists at 15%, next suspect is `KP_STEER`/`KI_STEER`/`KD_STEER` (also untuned BBB-ported gains, exercised on this hardware for the first time by this same redesign). Flagged secondary contributor: the new per-wheel L/R centering check could also be flip-flopping given the pot recalibration (§3.15) is still pending. Full trail: scratchpad.md, Mistake 17. **Not yet retested.**
 
+**Update — wobble persisted at 15%.** User proposed the opposite theory: 15% may be *below* this self-locking-screw actuator's real breakaway torque, so it chatters in place rather than cleanly moving, instead of overshooting. Raised `ACT_MIN_DUTY_PCT` to 70 as a direct test — the result discriminates between the two theories (settles = torque theory confirmed; worse/faster = overshoot theory confirmed, reverse direction needed instead). Full trail: scratchpad.md. **Not yet retested.**
+
 ---
 
 ## 4. Version Control

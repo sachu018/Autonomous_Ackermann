@@ -410,3 +410,11 @@ This document tracks mistakes encountered during the project evolution, how they
 - **How it was corrected:** Lowered `ACT_MIN_DUTY_PCT` 40.0→15.0 in `ackermann_config.h`. Still not a measured value — flagged explicitly to keep field-testing, and if wobble persists even at 15%, the next suspect is `KP_STEER`/`KI_STEER`/`KD_STEER` (also untouched, untuned BBB-ported gains, exercised on this hardware for the first time by this same redesign) rather than the floor alone.
 - **Also flagged as a possible secondary contributor:** the per-wheel L/R centering check (also new) could be flip-flopping between "centered"/"not centered" if the still-uncalibrated pot mismatch (~1.1-1.6°, not yet recalibrated — see the earlier pot-recalibration notes) puts one wheel right at the edge of its own 1.5° tolerance. Not fixed here; reinforces that the pot recalibration is still on the list.
 - **Not yet retested on hardware.** Source change only.
+
+---
+
+### Note: Wobble Persisted at 15% — Raised ACT_MIN_DUTY_PCT to 70% to Test the Opposite Theory
+- **What happened:** After Mistake 17's fix (40%→15%), user reported the wobble is still there and proposed the opposite diagnosis: *"i think its because the pwm is very less... can you increase the minimum pwm to 70 percent."*
+- **Two competing theories, now both on record:** (1) mine from Mistake 17 — the floor is too HIGH, so even a small correction overshoots back out the deadband, causing an overshoot-driven oscillation. (2) user's — the floor is too LOW, below this actuator's real breakaway torque (self-locking screw drive), so it just chatters/buzzes in place without net movement rather than cleanly settling.
+- **Applied as a direct test, not a confident fix:** `ACT_MIN_DUTY_PCT` raised 15→70 in `ackermann_config.h`. The outcome will discriminate between the two theories: if the wobble settles, insufficient torque was the real cause and 70% (or somewhere near it) is closer to the true floor; if the wobble gets worse/faster, that confirms the original overshoot theory instead, and the fix direction should reverse (well below 15%, not just back to it), likely combined with revisiting `KP_STEER`.
+- **Not yet retested on hardware.** Source change only.

@@ -98,11 +98,19 @@
  * (PA-12-300-1500, 300mm/7mm-s/12V, self-locking screw) has no published
  * minimum-moving-duty spec; keep field-testing and correcting, the same
  * way THR_FWD_MIN_DAC's original guess needed two rounds of correction
- * from real breakaway data before it was right. If wobble persists even
- * at 15%, suspect KP_STEER/KI_STEER/KD_STEER (also untuned BBB-ported
- * gains, exercised on this hardware for the first time) rather than this
- * floor alone. */
-#define ACT_MIN_DUTY_PCT        15.0f
+ * from real breakaway data before it was right.
+ *
+ * Wobble persisted at 15% too. User's read: opposite direction from the
+ * first correction's theory — 15% may be BELOW this actuator's real
+ * breakaway torque (self-locking screw drive), so it just chatters/buzzes
+ * in place rather than cleanly moving and settling, instead of 40%
+ * overshooting the deadband. Raised to 70.0f to test that directly: if
+ * this settles the wobble, it confirms insufficient torque was the cause;
+ * if the wobble gets WORSE/faster at 70%, that instead confirms the
+ * original overshoot theory and this should come back down (well below
+ * 15%, not just to it) with KP_STEER also revisited. Either outcome is
+ * useful data — still not a measured value either way. */
+#define ACT_MIN_DUTY_PCT        70.0f
 
 /* How close |target_steer_deg| must be to 0 before the "centered" check
  * requires BOTH angle_L and angle_R individually within STEER_DEADBAND_DEG,
