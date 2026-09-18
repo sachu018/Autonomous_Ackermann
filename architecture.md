@@ -337,6 +337,12 @@ Discussing §3.14 further, `angle_L`/`angle_R` were checked specifically at comm
 
 **Not yet rebuilt, reflashed, or retested.** Source change only; user will build and report back.
 
+### 3.17 First Flash — Actuator Wobble at Center, Traced to the Duty Floor
+
+User flashed §3.16's redesign and reported: *"the linear actuator is wobbling at zero position."* Root cause: `ACT_MIN_DUTY_PCT=40%` floored *any* nonzero PID correction up to 40% duty — with `STEER_DEADBAND_DEG` narrowed to 1.5°, even a fractional-degree correction snapped up to 40% was enough to overshoot straight back out the other side of the deadband every time, triggering the same correction in reverse: a self-sustaining limit-cycle, not the gentle creep-to-stop the PID zone was built to provide. Same category of mistake as the original `THR_FWD_MIN_DAC=1624` guess earlier this session — an unverified starting number turning out too aggressive once actually field-tested.
+
+**Fix:** lowered `ACT_MIN_DUTY_PCT` 40→15 in `ackermann_config.h`. Still not a measured value — if wobble persists at 15%, next suspect is `KP_STEER`/`KI_STEER`/`KD_STEER` (also untuned BBB-ported gains, exercised on this hardware for the first time by this same redesign). Flagged secondary contributor: the new per-wheel L/R centering check could also be flip-flopping given the pot recalibration (§3.15) is still pending. Full trail: scratchpad.md, Mistake 17. **Not yet retested.**
+
 ---
 
 ## 4. Version Control

@@ -86,11 +86,23 @@
 /* Floor on the PID's commanded duty magnitude, same role as THR_FWD_MIN_DAC
  * plays for the rear wheels: a small computed duty can be too weak to break
  * the actuator's own static friction, stalling short of centered instead of
- * creeping the last bit in. STARTING GUESS, not a measured value — this
- * actuator (PA-12-300-1500, 300mm/7mm-s/12V, self-locking screw) has no
- * published minimum-moving-duty spec; field-test and correct, the same way
- * THR_FWD_MIN_DAC's original guess had to be corrected from field data. */
-#define ACT_MIN_DUTY_PCT        40.0f
+ * creeping the last bit in.
+ *
+ * Was 40.0f — field-tested and found to cause a persistent wobble/limit-
+ * cycle right at the zero position: with STEER_DEADBAND_DEG this tight
+ * (1.5 deg), flooring ANY nonzero correction up to 40% duty was enough to
+ * overshoot straight back out the other side of the deadband every time,
+ * triggering the same correction in reverse — an oscillation, not the
+ * gentle creep-to-stop this floor was meant to guarantee. Lowered to 15.0f
+ * as a smaller first guess. STILL NOT A MEASURED VALUE — this actuator
+ * (PA-12-300-1500, 300mm/7mm-s/12V, self-locking screw) has no published
+ * minimum-moving-duty spec; keep field-testing and correcting, the same
+ * way THR_FWD_MIN_DAC's original guess needed two rounds of correction
+ * from real breakaway data before it was right. If wobble persists even
+ * at 15%, suspect KP_STEER/KI_STEER/KD_STEER (also untuned BBB-ported
+ * gains, exercised on this hardware for the first time) rather than this
+ * floor alone. */
+#define ACT_MIN_DUTY_PCT        15.0f
 
 /* How close |target_steer_deg| must be to 0 before the "centered" check
  * requires BOTH angle_L and angle_R individually within STEER_DEADBAND_DEG,

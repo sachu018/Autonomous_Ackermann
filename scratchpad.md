@@ -401,3 +401,12 @@ This document tracks mistakes encountered during the project evolution, how they
 - **Files touched:** `ackermann_config.h` (new `STEER_PROP_ZONE_DEG`, `ACT_MIN_DUTY_PCT`, `CENTER_TARGET_EPS`, `STEER_CENTER_WATCHDOG_US`; `STEER_DEADBAND_DEG` 2.5→1.5; updated the now-stale "steer_pid.c is dead code" comment), `main.c` (new watchdog static state, step 6 rewritten).
 - **Deliberately NOT touched:** `Ackermann_ComputeRPM()`/the electronic differential — still uses `steer.delta` exactly as before, per the user's explicit "let the delta value be used to calculate the differential."
 - **Not yet rebuilt, reflashed, or retested on hardware** — user said they'll build and update later. Firmware source change only, in `Rover_closed_loop/`.
+
+---
+
+### Mistake 17: ACT_MIN_DUTY_PCT=40% Was Too Aggressive — Caused Actuator Wobble at Center
+- **What happened:** First field flash of the bang-bang/PID actuator redesign — user: *"the linear actuator is wobbling at zero position."*
+- **Root cause:** `ACT_MIN_DUTY_PCT=40.0f` floored ANY nonzero PID correction up to at least 40% duty, including a correction of a fraction of a degree. With `STEER_DEADBAND_DEG=1.5°` that tight, snapping even a tiny correction up to 40% was enough to overshoot straight back out the other side of the deadband every time, triggering the same correction in reverse — a self-sustaining limit-cycle oscillation, not the gentle creep-to-stop the PID zone was built to provide. Same category of mistake as the original `THR_FWD_MIN_DAC` guess (1624) earlier this session — an unverified starting number turning out too aggressive once actually field-tested, exactly the risk flagged in its own comment when it was introduced.
+- **How it was corrected:** Lowered `ACT_MIN_DUTY_PCT` 40.0→15.0 in `ackermann_config.h`. Still not a measured value — flagged explicitly to keep field-testing, and if wobble persists even at 15%, the next suspect is `KP_STEER`/`KI_STEER`/`KD_STEER` (also untouched, untuned BBB-ported gains, exercised on this hardware for the first time by this same redesign) rather than the floor alone.
+- **Also flagged as a possible secondary contributor:** the per-wheel L/R centering check (also new) could be flip-flopping between "centered"/"not centered" if the still-uncalibrated pot mismatch (~1.1-1.6°, not yet recalibrated — see the earlier pot-recalibration notes) puts one wheel right at the edge of its own 1.5° tolerance. Not fixed here; reinforces that the pot recalibration is still on the list.
+- **Not yet retested on hardware.** Source change only.

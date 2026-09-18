@@ -1,6 +1,6 @@
 ================================================================================
   CURRENT ROVER STATUS — Rover_closed_loop/ + RPi_companion/
-  Snapshot date: 2026-09-17
+  Snapshot date: 2026-09-18
 ================================================================================
 
   PURPOSE OF THIS FILE
@@ -147,9 +147,15 @@
                                           with power off)
     Minimum moving duty                : NOT published by the manufacturer.
                                           Field-tuning value currently in
-                                          use: ACT_MIN_DUTY_PCT = 40% (a
-                                          starting guess, not yet verified
-                                          against real breakaway behavior)
+                                          use: ACT_MIN_DUTY_PCT = 15% (was
+                                          40% — first field flash wobbled/
+                                          oscillated at the zero position,
+                                          since ANY nonzero correction being
+                                          floored to 40% duty was enough to
+                                          overshoot back out the other side
+                                          of the 1.5 deg deadband every
+                                          time. Lowered to 15%, still an
+                                          unverified guess pending retest)
 
   Rear motor driver: Cytron MD10C R3 x2 (one per side), PWM+DIR interface,
   throttle set via MCP4725 DAC (I2C, 12-bit, 0-4095 = 0-5V) per side.
@@ -739,6 +745,11 @@
      gap. If the actuator hunts/oscillates at the new tighter
      STEER_DEADBAND_DEG (1.5 deg), widen it back toward 2.5 deg before
      changing anything else.
+     UPDATE: first flash surfaced a related problem — see issue 5 below,
+     the duty floor was causing an outright wobble at center, not just
+     leaving the hysteresis unresolved. Fixed once (40->15%); the
+     hysteresis question itself is still unconfirmed pending a clean
+     retest with the lowered floor.
 
   4. STEERING LOCK ASYMMETRY. Full left lock reads ~+42-45 deg, full
      right lock only reaches ~-39 to -42 deg under the current
@@ -748,10 +759,16 @@
      Not a software bug; flagged by the user as a candidate for the next
      hardware revision, not addressed in software.
 
-  5. ACT_MIN_DUTY_PCT (40%) is a STARTING GUESS, not a field-measured
-     value — this actuator has no published minimum-moving-duty spec.
-     Same situation THR_FWD_MIN_DAC was in before it was corrected from
-     real breakaway data; expect this to need the same treatment.
+  5. ACT_MIN_DUTY_PCT is a STARTING GUESS, not a field-measured value —
+     this actuator has no published minimum-moving-duty spec. The first
+     guess (40%) was FIELD-TESTED AND FOUND WRONG: flooring any nonzero
+     correction up to 40% duty overshot straight back out the other side
+     of the 1.5 deg deadband every time, causing a persistent wobble right
+     at the centered position ("the linear actuator is wobbling at zero
+     position"). Lowered to 15% — still an unverified guess, not yet
+     retested. Same situation THR_FWD_MIN_DAC was in before it needed two
+     rounds of correction from real breakaway data; expect this to need
+     the same kind of iteration.
 
   6. KP_STEER/KI_STEER/KD_STEER (5.0/0.1/0.5) are untouched BBB-ported
      gains, now genuinely exercised on this hardware for the first time as
@@ -800,7 +817,7 @@
   KP_STEER / KI_STEER / KD_STEER   5.0 / 0.1 / 0.5   (BBB-ported, untuned — §9)
   STEER_INTEGRAL_MAX_PCT  50.0        (%)
   STEER_PROP_ZONE_DEG     4.0         (deg — bang-bang beyond this, PID inside)
-  ACT_MIN_DUTY_PCT        40.0        (% — starting guess, §9)
+  ACT_MIN_DUTY_PCT        15.0        (% — was 40.0, caused wobble at center, §9 issue 5)
   CENTER_TARGET_EPS       1.0         (deg — per-wheel check trigger threshold)
   STEER_CENTER_WATCHDOG_US 2500000    (2.5s)
   ADS1115_I2C_ADDR        0x48
@@ -895,6 +912,13 @@
               Renumbered the old §5.3/§5.4 (actuator control / wheel
               throttle) to §5.5/§5.6 accordingly; all cross-references
               elsewhere in this file updated to match.
+
+  2026-09-18  First hardware flash of the bang-bang/PID actuator redesign
+              reported a wobble at the zero position. Traced to
+              ACT_MIN_DUTY_PCT=40% overshooting back out the 1.5 deg
+              deadband on every small correction; lowered to 15% (still
+              unverified, pending retest). Updated §3/§9/§10 and the
+              config dump accordingly.
 
   -- Add new dated entries above this line as the system changes. Edit the
      relevant section above rather than rewriting the whole file, and bump
