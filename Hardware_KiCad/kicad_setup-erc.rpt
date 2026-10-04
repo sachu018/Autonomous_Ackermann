@@ -1,0 +1,872 @@
+ERC report (2026-07-27T17:23:45, Encoding UTF8)
+Report includes: Errors, Warnings
+
+***** Sheet /
+[pin_not_connected]: Pin not connected
+    ; error
+    @(31.75 mm, 200.66 mm): Symbol RX1 Pin 14 [CH10, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(31.75 mm, 203.20 mm): Symbol RX1 Pin 13 [CH9, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(31.75 mm, 205.74 mm): Symbol RX1 Pin 12 [CH8, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(31.75 mm, 208.28 mm): Symbol RX1 Pin 11 [CH7, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(31.75 mm, 210.82 mm): Symbol RX1 Pin 10 [CH6, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(31.75 mm, 213.36 mm): Symbol RX1 Pin 5 [CH1, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(31.75 mm, 215.90 mm): Symbol RX1 Pin 6 [CH2, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(31.75 mm, 218.44 mm): Symbol RX1 Pin 7 [CH3, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(31.75 mm, 220.98 mm): Symbol RX1 Pin 8 [CH4, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(31.75 mm, 223.52 mm): Symbol RX1 Pin 9 [CH5, Output, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(35.56 mm, 77.47 mm): Symbol U6 Pin 1 [VIN+, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(62.23 mm, 200.66 mm): Symbol RX1 Pin 4 [PPM, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(62.23 mm, 205.74 mm): Symbol RX1 Pin 15 [BAT_V, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(62.23 mm, 205.74 mm): Symbol RX1 Pin 15 [BAT_V, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(63.50 mm, 63.50 mm): Symbol SW1 Pin 2 [2, Passive, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(66.04 mm, 111.76 mm): Symbol BC1 Pin 1 [B+, Power input, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(86.36 mm, 64.77 mm): Symbol M1 Pin P9_3 [VDD_3V3B, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 69.85 mm): Symbol M1 Pin P9_7 [SYS_5V, Power input, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(86.36 mm, 69.85 mm): Symbol M1 Pin P9_7 [SYS_5V, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 72.39 mm): Symbol M1 Pin P9_32 [VDD_ADC, Power input, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(86.36 mm, 72.39 mm): Symbol M1 Pin P9_32 [VDD_ADC, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 77.47 mm): Symbol M1 Pin P9_24 [UART1_TXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 80.01 mm): Symbol M1 Pin P9_26 [UART1_RXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 85.09 mm): Symbol M1 Pin P9_21 [UART2_TXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 87.63 mm): Symbol M1 Pin P9_22 [UART2_RXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 92.71 mm): Symbol M1 Pin P9_13 [UART4_TXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 95.25 mm): Symbol M1 Pin P9_11 [UART4_RXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 100.33 mm): Symbol M1 Pin P8_37 [UART5_TXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 107.95 mm): Symbol M1 Pin P8_36 [UART3_CTSN, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 110.49 mm): Symbol M1 Pin P8_34 [UART3_RTSN, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 115.57 mm): Symbol M1 Pin P8_35 [UART4_CTSN, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 118.11 mm): Symbol M1 Pin P8_33 [UART4_RTSN, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 123.19 mm): Symbol M1 Pin P8_31 [UART5_CTSN, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 125.73 mm): Symbol M1 Pin P8_32 [UART5_RTSN, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 146.05 mm): Symbol M1 Pin P8_17 [GPIO0_27, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 151.13 mm): Symbol M1 Pin P9_42 [GPIO0_7/GPIO3_18, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 153.67 mm): Symbol M1 Pin P9_27 [GPIO3_19, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 156.21 mm): Symbol M1 Pin P9_41 [CLKOUT2/GPIO3_20, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 158.75 mm): Symbol M1 Pin P9_25 [GPIO3_21, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 163.83 mm): Symbol M1 Pin P8_18 [GPIO2_1, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 168.91 mm): Symbol M1 Pin P8_45 [GPIO2_6, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 171.45 mm): Symbol M1 Pin P8_46 [GPIO2_7, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 173.99 mm): Symbol M1 Pin P8_43 [GPIO2_8, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 176.53 mm): Symbol M1 Pin P8_44 [GPIO2_9, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 179.07 mm): Symbol M1 Pin P8_41 [GPIO2_10, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 181.61 mm): Symbol M1 Pin P8_42 [GPIO2_11, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 184.15 mm): Symbol M1 Pin P8_39 [GPIO2_12, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 186.69 mm): Symbol M1 Pin P8_40 [GPIO2_13, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 191.77 mm): Symbol M1 Pin P8_27 [GPIO2_22, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 194.31 mm): Symbol M1 Pin P8_29 [GPIO2_23, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 196.85 mm): Symbol M1 Pin P8_28 [GPIO2_24, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 199.39 mm): Symbol M1 Pin P8_30 [GPIO2_25, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(86.36 mm, 209.55 mm): Symbol M1 Hidden pin P2 [SHIELD, Passive, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 77.47 mm): Symbol M1 Pin P9_9 [PWR_BUT, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(147.32 mm, 77.47 mm): Symbol M1 Pin P9_9 [PWR_BUT, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 80.01 mm): Symbol M1 Pin P9_10 [~{SYS_RESET}, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(147.32 mm, 80.01 mm): Symbol M1 Pin P9_10 [~{SYS_RESET}, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 85.09 mm): Symbol M1 Pin P9_39 [AIN0, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(147.32 mm, 85.09 mm): Symbol M1 Pin P9_39 [AIN0, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 87.63 mm): Symbol M1 Pin P9_40 [AIN1, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(147.32 mm, 87.63 mm): Symbol M1 Pin P9_40 [AIN1, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 90.17 mm): Symbol M1 Pin P9_37 [AIN2, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(147.32 mm, 90.17 mm): Symbol M1 Pin P9_37 [AIN2, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 92.71 mm): Symbol M1 Pin P9_38 [AIN3, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(147.32 mm, 92.71 mm): Symbol M1 Pin P9_38 [AIN3, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 95.25 mm): Symbol M1 Pin P9_33 [AIN4, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(147.32 mm, 95.25 mm): Symbol M1 Pin P9_33 [AIN4, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 97.79 mm): Symbol M1 Pin P9_36 [AIN5, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(147.32 mm, 97.79 mm): Symbol M1 Pin P9_36 [AIN5, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 100.33 mm): Symbol M1 Pin P9_35 [AIN6, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(147.32 mm, 100.33 mm): Symbol M1 Pin P9_35 [AIN6, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 105.41 mm): Symbol M1 Pin J1_4 [B_UART0_RX, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 107.95 mm): Symbol M1 Pin J1_5 [B_UART0_TX, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 113.03 mm): Symbol M1 Pin P9_17 [I2C1_SCL, Bidirectional, Clock]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 115.57 mm): Symbol M1 Pin P9_18 [I2C1_SDA, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 128.27 mm): Symbol M1 Pin P9_28 [SPI1_CS0, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 130.81 mm): Symbol M1 Pin P9_29 [SPI1_D0, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 133.35 mm): Symbol M1 Pin P9_30 [SPI1_D1, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 135.89 mm): Symbol M1 Pin P9_31 [SPI1_SCLK, Bidirectional, Clock]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 140.97 mm): Symbol M1 Pin P9_14 [EHRPWM1A, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 143.51 mm): Symbol M1 Pin P9_16 [EHRPWM1B, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 148.59 mm): Symbol M1 Pin P8_19 [EHRPWM2A, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 151.13 mm): Symbol M1 Pin P8_13 [EHRPWM2B, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 156.21 mm): Symbol M1 Pin P8_25 [GPIO1_0, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 158.75 mm): Symbol M1 Pin P8_24 [GPIO1_1, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 161.29 mm): Symbol M1 Pin P8_5 [GPIO1_2, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 163.83 mm): Symbol M1 Pin P8_6 [GPIO1_3, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 166.37 mm): Symbol M1 Pin P8_23 [GPIO1_4, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 168.91 mm): Symbol M1 Pin P8_22 [GPIO1_5, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 171.45 mm): Symbol M1 Pin P8_3 [GPIO1_6, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 173.99 mm): Symbol M1 Pin P8_4 [GPIO1_7, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 179.07 mm): Symbol M1 Pin P8_12 [GPIO1_12, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 181.61 mm): Symbol M1 Pin P8_11 [GPIO1_13, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 184.15 mm): Symbol M1 Pin P8_16 [GPIO1_14, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 186.69 mm): Symbol M1 Pin P8_15 [GPIO1_15, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 191.77 mm): Symbol M1 Pin P9_15 [GPIO1_16, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 194.31 mm): Symbol M1 Pin P9_23 [GPIO1_17, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 199.39 mm): Symbol M1 Pin P9_12 [GPIO1_28, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 204.47 mm): Symbol M1 Pin P8_26 [GPIO1_29, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 207.01 mm): Symbol M1 Pin P8_21 [GPIO1_30, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(147.32 mm, 209.55 mm): Symbol M1 Pin P8_20 [GPIO1_31, Bidirectional, Line]
+[pin_to_pin]: Pins of type Output and Output are connected
+    ; error
+    @(175.26 mm, 119.38 mm): Symbol U22 Pin 7 [VDD, Output, Line]
+    @(176.53 mm, 143.51 mm): Symbol U23 Pin 7 [VDD, Output, Line]
+[pin_to_pin]: Pins of type Output and Output are connected
+    ; error
+    @(175.26 mm, 127.00 mm): Symbol U22 Pin 6 [VSS, Output, Line]
+    @(175.26 mm, 119.38 mm): Symbol U22 Pin 7 [VDD, Output, Line]
+[pin_to_pin]: Pins of type Output and Power output are connected
+    ; error
+    @(176.53 mm, 143.51 mm): Symbol U23 Pin 7 [VDD, Output, Line]
+    @(55.88 mm, 80.01 mm): Symbol U6 Pin 4 [VOUT-, Power output, Line]
+[pin_to_pin]: Pins of type Output and Output are connected
+    ; error
+    @(176.53 mm, 151.13 mm): Symbol U23 Pin 6 [VSS, Output, Line]
+    @(176.53 mm, 143.51 mm): Symbol U23 Pin 7 [VDD, Output, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(187.96 mm, 104.14 mm): Symbol #PWR08 Pin 1 [Power input, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(195.58 mm, 60.96 mm): Symbol #PWR09 Pin 1 [Power input, Line]
+[pin_to_pin]: Pins of type Output and Output are connected
+    ; error
+    @(209.55 mm, 92.71 mm): Symbol U13 Pin 6 [VO, Output, Line]
+    @(209.55 mm, 97.79 mm): Symbol U13 Pin 7 [VO, Output, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(218.44 mm, 60.96 mm): Symbol #PWR010 Pin 1 [Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(239.84 mm, 176.19 mm): Symbol ENC1 Pin 1 [VCC, Power input, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(239.84 mm, 176.19 mm): Symbol ENC1 Pin 1 [VCC, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(239.84 mm, 183.81 mm): Symbol ENC1 Pin 2 [GND, Power input, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(239.84 mm, 183.81 mm): Symbol ENC1 Pin 2 [GND, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(239.84 mm, 216.19 mm): Symbol ENC2 Pin 1 [VCC, Power input, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(239.84 mm, 216.19 mm): Symbol ENC2 Pin 1 [VCC, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(239.84 mm, 223.81 mm): Symbol ENC2 Pin 2 [GND, Power input, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(239.84 mm, 223.81 mm): Symbol ENC2 Pin 2 [GND, Power input, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(245.11 mm, 74.93 mm): Symbol M5 Pin 4 [A4, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(260.16 mm, 176.19 mm): Symbol ENC1 Pin 3 [A, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(260.16 mm, 183.81 mm): Symbol ENC1 Pin 4 [B, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(260.16 mm, 216.19 mm): Symbol ENC2 Pin 3 [A, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(260.16 mm, 223.81 mm): Symbol ENC2 Pin 4 [B, Output, Line]
+[pin_to_pin]: Pins of type Output and Output are connected
+    ; error
+    @(279.40 mm, 135.89 mm): Symbol U3 Pin 18 [Throttle_VCC, Output, Line]
+    @(344.17 mm, 57.15 mm): Symbol U8 Pin 18 [Throttle_VCC, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(279.40 mm, 175.26 mm): Symbol U3 Pin 5 [SPEED_OUT, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(280.00 mm, 172.38 mm): Symbol C6 Pin 1 [Passive, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(280.00 mm, 187.62 mm): Symbol C5 Pin 2 [Passive, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(280.00 mm, 212.38 mm): Symbol C8 Pin 1 [Passive, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(280.00 mm, 227.62 mm): Symbol C7 Pin 2 [Passive, Line]
+[pin_to_pin]: Pins of type Output and Output are connected
+    ; error
+    @(344.17 mm, 57.15 mm): Symbol U8 Pin 18 [Throttle_VCC, Output, Line]
+    @(175.26 mm, 119.38 mm): Symbol U22 Pin 7 [VDD, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(344.17 mm, 96.52 mm): Symbol U8 Pin 5 [SPEED_OUT, Output, Line]
+[lib_symbol_issues]: The current configuration does not include the symbol library 'E-bike_Motor'
+    ; warning
+    @(45.72 mm, 81.28 mm): Symbol U6 [HiLink_48V_5V]
+[lib_symbol_mismatch]: Symbol 'Battery' doesn't match copy in library 'Device'
+    ; warning
+    @(46.99 mm, 63.50 mm): Symbol BT1 [Battery]
+[lib_symbol_issues]: The current configuration does not include the symbol library 'FLYSKY'
+    ; warning
+    @(46.99 mm, 203.20 mm): Symbol RX1 [FlySky_FS-iA10B]
+[lib_symbol_issues]: The current configuration does not include the symbol library 'E-bike_Motor'
+    ; warning
+    @(55.88 mm, 116.84 mm): Symbol BC1 [BMS_2S_3A]
+[footprint_link_issues]: The current configuration does not include the footprint library 'BEAGLEBONEBLACK'
+    ; warning
+    @(116.84 mm, 140.97 mm): Symbol M1 [BEAGLEBONEBLACK]
+[lib_symbol_issues]: The current configuration does not include the symbol library 'BEAGLEBONEBLACK'
+    ; warning
+    @(116.84 mm, 140.97 mm): Symbol M1 [BEAGLEBONEBLACK]
+[lib_symbol_mismatch]: Symbol 'MCP4725xxx-xCH' doesn't match copy in library 'Analog_DAC'
+    ; warning
+    @(165.10 mm, 123.19 mm): Symbol U22 [MCP4725xxx-xCH]
+[lib_symbol_mismatch]: Symbol 'MCP4725xxx-xCH' doesn't match copy in library 'Analog_DAC'
+    ; warning
+    @(166.37 mm, 147.32 mm): Symbol U23 [MCP4725xxx-xCH]
+[unconnected_wire_endpoint]: Unconnected wire endpoint
+    ; warning
+    @(239.84 mm, 176.19 mm): Horizontal Wire, length 9.84 mm
+[unconnected_wire_endpoint]: Unconnected wire endpoint
+    ; warning
+    @(239.84 mm, 183.81 mm): Horizontal Wire, length 9.84 mm
+[unconnected_wire_endpoint]: Unconnected wire endpoint
+    ; warning
+    @(239.84 mm, 216.19 mm): Horizontal Wire, length 9.84 mm
+[unconnected_wire_endpoint]: Unconnected wire endpoint
+    ; warning
+    @(239.84 mm, 223.81 mm): Horizontal Wire, length 9.84 mm
+[lib_symbol_issues]: The current configuration does not include the symbol library 'bldc_motor'
+    ; warning
+    @(236.22 mm, 73.66 mm): Symbol M5 [BLDC_Motor_Hall_3Phase]
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(239.84 mm, 176.19 mm): Horizontal Wire, length 9.84 mm
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(239.84 mm, 176.19 mm): Symbol ENC1 Pin 1 [VCC, Power input, Line]
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(239.84 mm, 183.81 mm): Horizontal Wire, length 9.84 mm
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(239.84 mm, 216.19 mm): Horizontal Wire, length 9.84 mm
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(239.84 mm, 216.19 mm): Symbol ENC2 Pin 1 [VCC, Power input, Line]
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(239.84 mm, 223.81 mm): Horizontal Wire, length 9.84 mm
+[lib_symbol_issues]: The current configuration does not include the symbol library 'Encoder'
+    ; warning
+    @(250.00 mm, 180.00 mm): Symbol ENC1 [YT06-OP-1M]
+[lib_symbol_issues]: The current configuration does not include the symbol library 'Encoder'
+    ; warning
+    @(250.00 mm, 220.00 mm): Symbol ENC2 [YT06-OP-1M]
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(260.16 mm, 176.19 mm): Horizontal Wire, length 19.84 mm
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(260.16 mm, 183.81 mm): Horizontal Wire, length 19.84 mm
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(260.16 mm, 216.19 mm): Horizontal Wire, length 19.84 mm
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(260.16 mm, 223.81 mm): Horizontal Wire, length 19.84 mm
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(280.00 mm, 172.38 mm): Symbol C6 Pin 1 [Passive, Line]
+[unconnected_wire_endpoint]: Unconnected wire endpoint
+    ; warning
+    @(260.16 mm, 176.19 mm): Horizontal Wire, length 19.84 mm
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(280.00 mm, 180.00 mm): Symbol C5 Pin 1 [Passive, Line]
+[unconnected_wire_endpoint]: Unconnected wire endpoint
+    ; warning
+    @(260.16 mm, 183.81 mm): Horizontal Wire, length 19.84 mm
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(280.00 mm, 212.38 mm): Symbol C8 Pin 1 [Passive, Line]
+[unconnected_wire_endpoint]: Unconnected wire endpoint
+    ; warning
+    @(260.16 mm, 216.19 mm): Horizontal Wire, length 19.84 mm
+[endpoint_off_grid]: Symbol pin or wire end off connection grid
+    ; warning
+    @(280.00 mm, 220.00 mm): Symbol C7 Pin 1 [Passive, Line]
+[unconnected_wire_endpoint]: Unconnected wire endpoint
+    ; warning
+    @(260.16 mm, 223.81 mm): Horizontal Wire, length 19.84 mm
+[lib_symbol_issues]: The current configuration does not include the symbol library 'E-bike_Motor'
+    ; warning
+    @(292.10 mm, 156.21 mm): Symbol U3 [CY_Controller_48V]
+[lib_symbol_issues]: The current configuration does not include the symbol library 'bldc_motor'
+    ; warning
+    @(321.31 mm, 163.83 mm): Symbol M2 [BLDC_Motor_Hall_3Phase]
+[lib_symbol_issues]: The current configuration does not include the symbol library 'E-bike_Motor'
+    ; warning
+    @(356.87 mm, 77.47 mm): Symbol U8 [CY_Controller_48V]
+[lib_symbol_issues]: The current configuration does not include the symbol library 'bldc_motor'
+    ; warning
+    @(386.08 mm, 85.09 mm): Symbol M3 [BLDC_Motor_Hall_3Phase]
+[footprint_link_issues]: The current configuration does not include the footprint library 'G-Energy'
+    ; warning
+    @(43.18 mm, 34.29 mm): Symbol U11 [HiLink_48V_5V]
+[lib_symbol_issues]: The current configuration does not include the symbol library 'E-bike_Motor'
+    ; warning
+    @(43.18 mm, 34.29 mm): Symbol U11 [HiLink_48V_5V]
+[lib_symbol_mismatch]: Symbol 'MCP4725xxx-xCH' doesn't match copy in library 'Analog_DAC'
+    ; warning
+    @(92.71 mm, 140.97 mm): Symbol U20 [MCP4725xxx-xCH]
+[lib_symbol_issues]: The current configuration does not include the symbol library 'E-bike_Motor'
+    ; warning
+    @(111.76 mm, 30.48 mm): Symbol U12 [HiLink_48V_5V]
+[lib_symbol_mismatch]: Symbol 'MCP4725xxx-xCH' doesn't match copy in library 'Analog_DAC'
+    ; warning
+    @(125.73 mm, 140.97 mm): Symbol U36 [MCP4725xxx-xCH]
+[isolated_pin_label]: Label connected to only one pin
+    ; warning
+    @(138.43 mm, 139.70 mm): Global Label 'TRL_R'
+[isolated_pin_label]: Label connected to only one pin
+    ; warning
+    @(140.97 mm, 143.51 mm): Global Label 'TRL_R_GND'
+[lib_symbol_mismatch]: Symbol 'MCP4725xxx-xCH' doesn't match copy in library 'Analog_DAC'
+    ; warning
+    @(186.69 mm, 30.48 mm): Symbol U21 [MCP4725xxx-xCH]
+[lib_symbol_mismatch]: Symbol 'MCP4725xxx-xCH' doesn't match copy in library 'Analog_DAC'
+    ; warning
+    @(215.90 mm, 138.43 mm): Symbol U15 [MCP4725xxx-xCH]
+[lib_symbol_mismatch]: Symbol 'SW_Rotary_1x3_MP' doesn't match copy in library 'Switch'
+    ; warning
+    @(226.06 mm, 92.71 mm): Symbol SW2 [SW_Rotary_1x3_MP]
+[lib_symbol_mismatch]: Symbol 'MCP4725xxx-xCH' doesn't match copy in library 'Analog_DAC'
+    ; warning
+    @(252.73 mm, 138.43 mm): Symbol U14 [MCP4725xxx-xCH]
+[isolated_pin_label]: Label connected to only one pin
+    ; warning
+    @(271.78 mm, 135.89 mm): Global Label 'TRL_L'
+[isolated_pin_label]: Label connected to only one pin
+    ; warning
+    @(271.78 mm, 146.05 mm): Global Label 'TRL_L_GND'
+[footprint_link_issues]: The current configuration does not include the footprint library 'BEAGLEBONEBLACK'
+    ; warning
+    @(101.60 mm, 105.41 mm): Symbol M4 [BEAGLEBONEBLACK]
+[lib_symbol_issues]: The current configuration does not include the symbol library 'BEAGLEBONEBLACK'
+    ; warning
+    @(101.60 mm, 105.41 mm): Symbol M4 [BEAGLEBONEBLACK]
+
+***** Sheet /Contactor Circuit/
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(33.02 mm, 30.48 mm): Symbol U11 Pin 1 [VIN+, Power input, Line]
+[pin_to_pin]: Pins of type Power output and Power output are connected
+    ; error
+    @(53.34 mm, 33.02 mm): Symbol U11 Pin 4 [VOUT-, Power output, Line]
+    @(55.88 mm, 80.01 mm): Symbol U6 Pin 4 [VOUT-, Power output, Line]
+[pin_to_pin]: Pins of type Output and Output are connected
+    ; error
+    @(62.23 mm, 88.90 mm): Symbol U10 Pin 6 [VO, Output, Line]
+    @(62.23 mm, 93.98 mm): Symbol U10 Pin 7 [VO, Output, Line]
+[pin_to_pin]: Pins of type Output and Power output are connected
+    ; error
+    @(102.87 mm, 137.16 mm): Symbol U20 Pin 7 [VDD, Output, Line]
+    @(53.34 mm, 30.48 mm): Symbol U11 Pin 3 [VOUT+, Power output, Line]
+[pin_to_pin]: Pins of type Output and Power output are connected
+    ; error
+    @(102.87 mm, 144.78 mm): Symbol U20 Pin 6 [VSS, Output, Line]
+    @(53.34 mm, 33.02 mm): Symbol U11 Pin 4 [VOUT-, Power output, Line]
+[pin_to_pin]: Pins of type Output and Output are connected
+    ; error
+    @(226.06 mm, 134.62 mm): Symbol U15 Pin 7 [VDD, Output, Line]
+    @(102.87 mm, 137.16 mm): Symbol U20 Pin 7 [VDD, Output, Line]
+[pin_to_pin]: Pins of type Output and Output are connected
+    ; error
+    @(226.06 mm, 142.24 mm): Symbol U15 Pin 6 [VSS, Output, Line]
+    @(102.87 mm, 144.78 mm): Symbol U20 Pin 6 [VSS, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(233.68 mm, 92.71 mm): Symbol SW2 Pin 2 [Passive, Line]
+[multiple_net_names]: Both 12V_GND and 48_GND are attached to the same items; 12V_GND will be used in the netlist
+    ; warning
+    @(125.73 mm, 30.48 mm): Global Label '12V_GND'
+    @(86.36 mm, 105.41 mm): Global Label '48_GND'
+[multiple_net_names]: Both 48_+ and A1 are attached to the same items; 48_+ will be used in the netlist
+    ; warning
+    @(242.57 mm, 95.25 mm): Global Label '48_+'
+    @(95.25 mm, 72.39 mm): Global Label 'A1'
+
+***** Sheet /BBB_Mapping/
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(71.12 mm, 29.21 mm): Symbol M4 Pin P9_3 [VDD_3V3B, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 34.29 mm): Symbol M4 Pin P9_7 [SYS_5V, Power input, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(71.12 mm, 34.29 mm): Symbol M4 Pin P9_7 [SYS_5V, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 36.83 mm): Symbol M4 Pin P9_32 [VDD_ADC, Power input, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(71.12 mm, 36.83 mm): Symbol M4 Pin P9_32 [VDD_ADC, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 41.91 mm): Symbol M4 Pin P9_24 [UART1_TXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 44.45 mm): Symbol M4 Pin P9_26 [UART1_RXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 49.53 mm): Symbol M4 Pin P9_21 [UART2_TXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 52.07 mm): Symbol M4 Pin P9_22 [UART2_RXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 57.15 mm): Symbol M4 Pin P9_13 [UART4_TXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 59.69 mm): Symbol M4 Pin P9_11 [UART4_RXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 64.77 mm): Symbol M4 Pin P8_37 [UART5_TXD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 72.39 mm): Symbol M4 Pin P8_36 [UART3_CTSN, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 74.93 mm): Symbol M4 Pin P8_34 [UART3_RTSN, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 80.01 mm): Symbol M4 Pin P8_35 [UART4_CTSN, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 82.55 mm): Symbol M4 Pin P8_33 [UART4_RTSN, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 87.63 mm): Symbol M4 Pin P8_31 [UART5_CTSN, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 90.17 mm): Symbol M4 Pin P8_32 [UART5_RTSN, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 110.49 mm): Symbol M4 Pin P8_17 [GPIO0_27, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 115.57 mm): Symbol M4 Pin P9_42 [GPIO0_7/GPIO3_18, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 118.11 mm): Symbol M4 Pin P9_27 [GPIO3_19, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 120.65 mm): Symbol M4 Pin P9_41 [CLKOUT2/GPIO3_20, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 123.19 mm): Symbol M4 Pin P9_25 [GPIO3_21, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 128.27 mm): Symbol M4 Pin P8_18 [GPIO2_1, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 133.35 mm): Symbol M4 Pin P8_45 [GPIO2_6, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 135.89 mm): Symbol M4 Pin P8_46 [GPIO2_7, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 138.43 mm): Symbol M4 Pin P8_43 [GPIO2_8, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 140.97 mm): Symbol M4 Pin P8_44 [GPIO2_9, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 143.51 mm): Symbol M4 Pin P8_41 [GPIO2_10, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 146.05 mm): Symbol M4 Pin P8_42 [GPIO2_11, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 148.59 mm): Symbol M4 Pin P8_39 [GPIO2_12, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 151.13 mm): Symbol M4 Pin P8_40 [GPIO2_13, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 156.21 mm): Symbol M4 Pin P8_27 [GPIO2_22, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 158.75 mm): Symbol M4 Pin P8_29 [GPIO2_23, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 161.29 mm): Symbol M4 Pin P8_28 [GPIO2_24, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 163.83 mm): Symbol M4 Pin P8_30 [GPIO2_25, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 173.99 mm): Symbol M4 Hidden pin P3 [SHIELD, Passive, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(71.12 mm, 181.61 mm): Symbol M4 Pin P9_34 [GNDA_ADC, Power input, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(71.12 mm, 181.61 mm): Symbol M4 Pin P9_34 [GNDA_ADC, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 41.91 mm): Symbol M4 Pin P9_9 [PWR_BUT, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(132.08 mm, 41.91 mm): Symbol M4 Pin P9_9 [PWR_BUT, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 44.45 mm): Symbol M4 Pin P9_10 [~{SYS_RESET}, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(132.08 mm, 44.45 mm): Symbol M4 Pin P9_10 [~{SYS_RESET}, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 49.53 mm): Symbol M4 Pin P9_39 [AIN0, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(132.08 mm, 49.53 mm): Symbol M4 Pin P9_39 [AIN0, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 52.07 mm): Symbol M4 Pin P9_40 [AIN1, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(132.08 mm, 52.07 mm): Symbol M4 Pin P9_40 [AIN1, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 54.61 mm): Symbol M4 Pin P9_37 [AIN2, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(132.08 mm, 54.61 mm): Symbol M4 Pin P9_37 [AIN2, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 57.15 mm): Symbol M4 Pin P9_38 [AIN3, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(132.08 mm, 57.15 mm): Symbol M4 Pin P9_38 [AIN3, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 59.69 mm): Symbol M4 Pin P9_33 [AIN4, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(132.08 mm, 59.69 mm): Symbol M4 Pin P9_33 [AIN4, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 62.23 mm): Symbol M4 Pin P9_36 [AIN5, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(132.08 mm, 62.23 mm): Symbol M4 Pin P9_36 [AIN5, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 64.77 mm): Symbol M4 Pin P9_35 [AIN6, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(132.08 mm, 64.77 mm): Symbol M4 Pin P9_35 [AIN6, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 69.85 mm): Symbol M4 Pin J1_4 [B_UART0_RX, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 72.39 mm): Symbol M4 Pin J1_5 [B_UART0_TX, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 77.47 mm): Symbol M4 Pin P9_17 [I2C1_SCL, Bidirectional, Clock]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 80.01 mm): Symbol M4 Pin P9_18 [I2C1_SDA, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 92.71 mm): Symbol M4 Pin P9_28 [SPI1_CS0, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 95.25 mm): Symbol M4 Pin P9_29 [SPI1_D0, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 97.79 mm): Symbol M4 Pin P9_30 [SPI1_D1, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 100.33 mm): Symbol M4 Pin P9_31 [SPI1_SCLK, Bidirectional, Clock]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 105.41 mm): Symbol M4 Pin P9_14 [EHRPWM1A, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 107.95 mm): Symbol M4 Pin P9_16 [EHRPWM1B, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 113.03 mm): Symbol M4 Pin P8_19 [EHRPWM2A, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 115.57 mm): Symbol M4 Pin P8_13 [EHRPWM2B, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 120.65 mm): Symbol M4 Pin P8_25 [GPIO1_0, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 123.19 mm): Symbol M4 Pin P8_24 [GPIO1_1, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 125.73 mm): Symbol M4 Pin P8_5 [GPIO1_2, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 128.27 mm): Symbol M4 Pin P8_6 [GPIO1_3, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 130.81 mm): Symbol M4 Pin P8_23 [GPIO1_4, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 133.35 mm): Symbol M4 Pin P8_22 [GPIO1_5, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 135.89 mm): Symbol M4 Pin P8_3 [GPIO1_6, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 138.43 mm): Symbol M4 Pin P8_4 [GPIO1_7, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 143.51 mm): Symbol M4 Pin P8_12 [GPIO1_12, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 146.05 mm): Symbol M4 Pin P8_11 [GPIO1_13, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 148.59 mm): Symbol M4 Pin P8_16 [GPIO1_14, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 151.13 mm): Symbol M4 Pin P8_15 [GPIO1_15, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 156.21 mm): Symbol M4 Pin P9_15 [GPIO1_16, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 158.75 mm): Symbol M4 Pin P9_23 [GPIO1_17, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 163.83 mm): Symbol M4 Pin P9_12 [GPIO1_28, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 168.91 mm): Symbol M4 Pin P8_26 [GPIO1_29, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 171.45 mm): Symbol M4 Pin P8_21 [GPIO1_30, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(132.08 mm, 173.99 mm): Symbol M4 Pin P8_20 [GPIO1_31, Bidirectional, Line]
+[multiple_net_names]: Both 3V3_GND and DGND are attached to the same items; 3V3_GND will be used in the netlist
+    ; warning
+    @(54.61 mm, 179.07 mm): Global Label '3V3_GND'
+    @(71.12 mm, 179.07 mm): Symbol M4 Hidden pin P9_1 [DGND, Power input, Line]
+
+ ** ERC messages: 280  Errors 225  Warnings 55
+
+ ** Ignored checks:
+    - Global label only appears once in the schematic
+    - Four connection points are joined together
+    - SPICE model issue
+    - Assigned footprint doesn't match footprint filters

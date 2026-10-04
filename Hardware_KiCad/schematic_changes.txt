@@ -1,0 +1,43 @@
+===============================================================================
+ROVER SYSTEM - SCHEMATIC CHANGES LOG
+===============================================================================
+Project: Rover KiCad Design (/home/robin/Documents/Kicad/Rover)
+Schematic: kicad_setup.kicad_sch
+Tool Chain: KiCad Flatpak CLI 10.0.4
+
+CHANGES LOG (EDIT 1: YT06-OP-1M ENCODER INTEGRATION):
+-------------------------------------------------------------------------------
+1. SYMBOL DEFINITION:
+   - Added custom library symbol 'Encoder:YT06-OP-1M' inside lib_symbols block.
+
+2. PRECISE COMPONENT PLACEMENT:
+   - Left Wheel Encoder (ENC1):
+     * Position: (45.72mm, 165.10mm) on canvas, directly adjacent to BBB M1 eQEP1 pins.
+   - Right Wheel Encoder (ENC2):
+     * Position: (193.04mm, 101.60mm, Mirrored X) on canvas, directly facing BBB M1 eQEP2b pins.
+   - Noise Filtering Capacitors (Value: 104 / 100nF):
+     * C5: (73.66mm, 172.72mm) - Filters Left Phase A (P8_35)
+     * C6: (68.58mm, 172.72mm) - Filters Left Phase B (P8_33)
+     * C7: (167.64mm, 109.22mm) - Filters Right Phase A (P8_12)
+     * C8: (162.56mm, 109.22mm) - Filters Right Phase B (P8_11)
+
+3. DIRECT WIRE & NET CONNECTIONS:
+   - Left Encoder ENC1 -> BeagleBone Black M1:
+     * Pin 3 (Phase A) -> Wired directly to Pin P8_35 (81.28mm, 166.37mm), Label: ENC_L_PHASE_A
+     * Pin 4 (Phase B) -> Wired directly to Pin P8_33 (81.28mm, 163.83mm), Label: ENC_L_PHASE_B
+     * Pin 1 (VCC)     -> Wired to +5V net
+     * Pin 2 (GND)     -> Wired to power:GND
+   - Right Encoder ENC2 -> BeagleBone Black M1:
+     * Pin 3 (Phase A) -> Wired directly to Pin P8_12 (152.40mm, 102.87mm), Label: ENC_R_PHASE_A
+     * Pin 4 (Phase B) -> Wired directly to Pin P8_11 (152.40mm, 100.33mm), Label: ENC_R_PHASE_B
+     * Pin 1 (VCC)     -> Wired to +5V net
+     * Pin 2 (GND)     -> Wired to power:GND
+   - Power Supply Converter U6:
+     * Pin 3 (VOUT+) -> Connected to +5V net
+     * Pin 4 (VOUT-) -> Connected to GND net
+
+4. VISUAL RENDERING & VERIFICATION:
+   - Exported schematic to SVG: flatpak run --command=kicad-cli org.kicad.KiCad sch export svg ...
+   - Exported schematic to PDF: flatpak run --command=kicad-cli org.kicad.KiCad sch export pdf ...
+   - Passed KiCad Flatpak CLI plotting checks cleanly.
+===============================================================================

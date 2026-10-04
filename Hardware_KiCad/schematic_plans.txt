@@ -1,0 +1,47 @@
+===============================================================================
+ROVER SYSTEM - SCHEMATIC INTEGRATION PLAN: ENCODERS (YT06-OP-1M)
+===============================================================================
+Project: Rover KiCad Design (/home/robin/Documents/Kicad/Rover)
+Schematic: kicad_setup.kicad_sch
+Target Components: YT06-OP-1M Optical Quadrature Encoders (Left & Right Wheels)
+
+1. SYSTEM & HARDWARE OVERVIEW
+-------------------------------------------------------------------------------
+The rover uses differential drive with two BLDC motors. Encoder feedback is processed
+by the hardware eQEP (Enhanced Quadrature Encoder Pulse) peripherals on the BeagleBone Black.
+
+  - Left Wheel Encoder:  YT06-OP-1M (ENC1) -> eQEP1 (P8_35 / P8_33)
+  - Right Wheel Encoder: YT06-OP-1M (ENC2) -> eQEP2b (P8_12 / P8_11)
+  - Power Supply: Regulated 5V DC from Step-Down Converter U6 (Pin 3 VOUT+, Pin 4 VOUT-)
+  - Signal Filtering: 104 (100nF) ceramic capacitors on each phase line to GND
+
+2. EXACT PINOUT & CONNECTION MAPPING
+-------------------------------------------------------------------------------
+A. Left Wheel Encoder (ENC1 - YT06-OP-1M):
+   Location: Placed at (X: 45.72mm, Y: 165.10mm) on schematic canvas (Left side of BBB M1)
+   - Pin 3 (Phase A Output) -> Wired to BBB Pin P8_35 (Canvas: 81.28mm, 166.37mm)
+   - Pin 4 (Phase B Output) -> Wired to BBB Pin P8_33 (Canvas: 81.28mm, 163.83mm)
+   - Pin 1 (VCC)            -> Connected to +5V power net (from U6 VOUT+)
+   - Pin 2 (GND)            -> Connected to power:GND symbol
+
+B. Right Wheel Encoder (ENC2 - YT06-OP-1M):
+   Location: Placed at (X: 193.04mm, Y: 101.60mm, Mirrored X) (Right side of BBB M1)
+   - Pin 3 (Phase A Output) -> Wired to BBB Pin P8_12 (Canvas: 152.40mm, 102.87mm)
+   - Pin 4 (Phase B Output) -> Wired to BBB Pin P8_11 (Canvas: 152.40mm, 100.33mm)
+   - Pin 1 (VCC)            -> Connected to +5V power net (from U6 VOUT+)
+   - Pin 2 (GND)            -> Connected to power:GND symbol
+
+3. FILTERING CAPACITORS (104 / 100nF)
+-------------------------------------------------------------------------------
+Placed directly on signal lines adjacent to the BeagleBone Black eQEP input pins:
+   - C5 (104 / 100nF): Connected between Left Phase A (P8_35) and GND
+   - C6 (104 / 100nF): Connected between Left Phase B (P8_33) and GND
+   - C7 (104 / 100nF): Connected between Right Phase A (P8_12) and GND
+   - C8 (104 / 100nF): Connected between Right Phase B (P8_11) and GND
+
+4. POWER SUPPLY REGULATION INTEGRATION
+-------------------------------------------------------------------------------
+   - Step-Down Converter U6 (HiLink 48V/8V to 5V Module):
+     * Pin 3 (VOUT+ @ 58.42mm, 77.47mm) -> Net label +5V supplying ENC1 VCC & ENC2 VCC
+     * Pin 4 (VOUT- @ 58.42mm, 80.01mm) -> Net label GND connected to system GND
+===============================================================================
